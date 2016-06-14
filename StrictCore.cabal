@@ -1,0 +1,25 @@
+name:                StrictCore
+version:             0.1.0.0
+-- synopsis:
+-- description:
+license:             BSD3
+license-file:        LICENSE
+author:              Ömer Sinan Ağacan
+maintainer:          omeragacan@gmail.com
+-- copyright:
+-- category:
+build-type:          Simple
+extra-source-files:  ChangeLog.md
+cabal-version:       >=1.10
+
+library
+  exposed-modules:     StrictCore.Syntax
+  -- other-modules:
+  -- other-extensions:
+  build-depends:
+    ghc == 8.1,
+    -- use the version used by ghc:
+    base
+
+  hs-source-dirs:      src
+  default-language:    Haskell2010

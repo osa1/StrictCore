@@ -59,7 +59,7 @@ data Expr
 type Bndr  = CoreBndr
 type Bndrs = [CoreBndr]
 
-type Bind  = (Bndr, Expr)
+type Bind  = (Bndrs, Expr)
 
 -- NOTE: We use GHC's AltCon but we need to translate DataCons of DataAlt!
 -- (translate field types so that they become thunks -- except the
@@ -174,9 +174,9 @@ translateTerm (CoreSyn.Coercion co)
 translateBind :: CoreBind -> [Bind]
 -- Q: Why not remove NonRec in GHC and use a singleton list instead?
 translateBind (CoreSyn.NonRec b rhs)
-  = [(b, translateTerm rhs)]
+  = [([b], translateTerm rhs)]
 translateBind (CoreSyn.Rec bs)
-  = map (\(b, rhs) -> (b, translateTerm rhs)) bs
+  = map (\(b, rhs) -> ([b], translateTerm rhs)) bs
 
 translateAlts :: [CoreSyn.CoreAlt] -> [Alt]
 translateAlts = map translateAlt
@@ -307,29 +307,42 @@ pprExpr add_par (Lit lit)
 pprExpr _ (Var v)
   = ppr v
 
-pprExpr _ (Let _ _ _)
-  = undefined
+pprExpr add_par (Let bndrs rhs e)
+  = add_par $
+    sep [ hang (text "let" <+> sep (punctuate comma (map ppr bndrs)) <+> char '=')
+            2 (pprExpr noParens rhs <+> text "in")
+        , pprExpr noParens e
+        ]
 
-pprExpr _ (ValRec _ _)
-  = undefined
+pprExpr add_par (ValRec binds body)
+  = add_par $
+    sep [ hang (text "valrec") 2 (pprBinds binds <+> text "in")
+        , pprExpr noParens body
+        ]
 
 pprExpr _ (App e []) -- thunk evaluation
   = char '~' <> pprExpr parens e
       -- there isn't any syntactic sugar for this in the paper,
       -- so making up one.
 
-pprExpr _ (App _ _)
-  = undefined
+pprExpr add_par (App f as)
+  = add_par $ hang (pprExpr parens f) 2 (sep (map pprArg as))
 
 pprExpr _ (Lam [] e) -- thunk
   = braces (pprExpr noParens e)
 
 pprExpr add_par (Lam as e)
-  = add_par $ hang (text "\\" <+> sep (map ppr as) <+> arrow)
-                   2 (pprExpr noParens e)
+  = add_par $
+    hang (text "\\" <+> sep (map ppr as) <+> arrow) 2 (pprExpr noParens e)
 
-pprExpr _ (Case _ _)
-  = undefined
+pprExpr add_par (Case scrt alts)
+  = add_par $
+    sep [ sep [ hang (text "case") 2 (pprExpr noParens scrt)
+              , text "of" <+> char '{'
+              ]
+        , nest 2 (vcat (punctuate semi (map pprAlt alts)))
+        , char '}'
+        ]
 
 pprExpr add_par (Type ty)
   = add_par (text "TYPE:" <+> ppr ty)
@@ -340,8 +353,28 @@ pprExpr add_par (Coercion co)
 pprExpr add_par (Cast e co)
   = add_par (sep [pprExpr parens e, text "`cast`" <+> pprCo co])
 
+pprBinds :: [Bind] -> SDoc
+pprBinds bs
+  = vcat (map pprBind bs)
+
+pprBind :: Bind -> SDoc
+pprBind (bndrs, expr)
+  = hang (hsep (map ppr bndrs) <+> char '=') 2 (pprExpr noParens expr)
+
+pprAlt :: Alt -> SDoc
+pprAlt (con, args, rhs)
+  = hang (ppr con <+> fsep (map ppr args) <+> arrow) 2 (pprExpr noParens rhs)
+
 pprCo :: Coercion -> SDoc
 pprCo co = parens (sep [ppr co, dcolon <+> ppr (coercionType co)])
+
+pprArg :: Expr -> SDoc
+pprArg (Type ty)
+  = char '@' <+> pprParendType ty
+pprArg (Coercion co)
+  = text "@~" <+> pprCo co
+pprArg e
+  = pprExpr parens e
 
 --------------------------------------------------------------------------------
 -- * Utils

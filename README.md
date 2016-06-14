@@ -108,3 +108,7 @@ Type syntax:
 {t1, t2, ...}       -- thunk, sugar for <> -> <t1, t2, ...>.
                     -- (# #) -> (# t1, t2, ... #) in Core syntax
 ```
+
+## Translation from Core to StrictCore
+
+We follow Figures 9 and 10 of the paper.

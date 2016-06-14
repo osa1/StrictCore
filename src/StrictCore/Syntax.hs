@@ -123,30 +123,20 @@ translateType (CoercionTy co)
 
 translateTerm :: CoreExpr -> Expr
 translateTerm (CoreSyn.Var v)
-  = Var v
+  = forceTerm (Var v)
 
 translateTerm (CoreSyn.Lit l)
-  = mkThunkTerm (Lit l)
+  = mkThunk (Lit l)
 
-translateTerm e0@(CoreSyn.App _ _)
-  = let
-      (e1, es) = CoreSyn.collectArgs e0
-
-      -- Hmm... So e1 and es become thunks...
-      e1' = translateTerm e1
-      es' = map translateTerm es
-    in
-      -- Returned term should also be a thunk. When forced, it should apply es
-      -- to e1. So we get this:
-      mkThunkTerm $
-        App (mkForceTerm e1') (map mkForceTerm es')
+translateTerm (CoreSyn.App e1 e2)
+  = App (translateTerm e1) [ mkThunk (translateTerm e2) ]
 
 translateTerm e0@(CoreSyn.Lam _ _)
   = let
       (bndrs, e) = CoreSyn.collectBinders e0
       -- TODO: Some of the binders are type binders...
     in
-      mkThunkTerm $
+      mkThunk $
         Lam bndrs (translateTerm e)
 
 translateTerm (CoreSyn.Let bind e)
@@ -155,7 +145,7 @@ translateTerm (CoreSyn.Let bind e)
 
 translateTerm (CoreSyn.Case scrt _scrt_bndr _ty alts)
   = -- TODO: ignoring scrutinee binder and type for now
-    mkThunkTerm $
+    mkThunk $
       Case (translateTerm scrt) (translateAlts alts)
 
 translateTerm (CoreSyn.Cast e co)
@@ -226,8 +216,8 @@ isThunkType = isJust . isThunkType_maybe
 
 -- | We need to explicitly build thunks in StrictCore. A thunk is just a nullary
 -- lambda.
-mkThunkTerm :: Expr -> Expr
-mkThunkTerm = Lam []
+mkThunk :: Expr -> Expr
+mkThunk = Lam []
 
 -- | Multi-arity is just unboxed tuple in the original Core. Note that unboxed
 -- tuples are the only unlifted types we allow for now.
@@ -236,9 +226,9 @@ mkMultiArityType = mkTupleTy Unboxed
 
 -- | Generate term that forces a given thunk. Forcing means just applying the
 -- function. (remember that thunks are just nullary lambdas)
-mkForceTerm :: Expr -> Expr
-mkForceTerm e
-  = assert "mkForceTerm" (text "Term is not a thunk:" <+> ppr e) (isThunkType (exprType e)) $
+forceTerm :: Expr -> Expr
+forceTerm e
+  = assert "forceTerm" (text "Term is not a thunk:" <+> ppr e) (isThunkType (exprType e)) $
     App e []
 
 --------------------------------------------------------------------------------

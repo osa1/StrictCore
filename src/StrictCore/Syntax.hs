@@ -155,6 +155,9 @@ translateTerm (CoreSyn.Lit l)
   = Value (Lit l)
 
 translateTerm (CoreSyn.App e1 e2)
+  | CoreSyn.isTypeArg e2
+  = App (translateTerm e1) [ translateTerm e2 ]
+  | otherwise
   = App (translateTerm e1) [ mkThunk (translateTerm e2) ]
 
 translateTerm (CoreSyn.Lam arg body)
@@ -337,7 +340,7 @@ pprExpr _ (Var v)
 
 pprExpr add_par (Eval bndrs rhs e)
   = add_par $
-    sep [ hang (text "eval" <+> sep (map ppr bndrs)) 2 (char '=' <+> ppr rhs) $$ text "in"
+    sep [ sep [ hang (text "eval" <+> sep (map ppr bndrs)) 2 (char '=' <+> ppr rhs), text "in" ]
         , pprExpr noParens e ]
 
 pprExpr add_par (Let bind body)
@@ -387,7 +390,7 @@ pprVal add_par (Lam as e)
 
 pprVal add_par (Con con as)
   = add_par $
-    sep (ppr con : map (pprAtom parens) as)
+    sep (ppr con : map (pprAtomArg parens) as)
 
 pprVal add_par (Lit lit)
   = pprLiteral add_par lit
@@ -408,6 +411,14 @@ pprAtom add_par (ACast a co)
 
 pprAtom _ (AType ty)
   = ppr ty
+
+pprAtomArg :: (SDoc -> SDoc) -> Atom -> SDoc
+
+pprAtomArg _ (AType ty)
+  = char '@' <+> ppr ty
+
+pprAtomArg add_par a
+  = pprAtom add_par a
 
 pprBinds :: [Bind] -> SDoc
 pprBinds bs

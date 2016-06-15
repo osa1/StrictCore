@@ -13,7 +13,10 @@ extra-source-files:  ChangeLog.md
 cabal-version:       >=1.10
 
 library
-  exposed-modules:     StrictCore.Syntax
+  exposed-modules:
+    StrictCore.Plugin
+    StrictCore.Syntax
+
   -- other-modules:
   -- other-extensions:
   build-depends:

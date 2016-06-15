@@ -268,7 +268,6 @@ exprType (Value val)
 exprType (Var v)
   = varType v
 
-
 valType :: Value -> Type
 
 valType (Lam _ _)
@@ -318,6 +317,9 @@ exprType (Coercion co)
 
 instance Outputable Expr where
   ppr = pprExpr noParens
+
+instance Outputable Bind where
+  ppr = pprBind
 
 noParens :: SDoc -> SDoc
 noParens = id

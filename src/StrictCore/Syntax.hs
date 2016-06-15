@@ -6,15 +6,14 @@ module StrictCore.Syntax where
 import           CoreSyn        (AltCon, AltCon (..), CoreBind, CoreBndr,
                                  CoreExpr)
 import qualified CoreSyn
-import qualified CoreUtils
+import           CoreUtils      ()
 
 import           BasicTypes
-import           Coercion       (coercionKind, coercionType)
+import           Coercion       (coercionType)
 import           DataCon
 import           Id
 import           Literal
 import           Outputable     hiding (panic)
-import           Pair           (pSnd)
 import           TyCon
 import           TyCoRep
 import           Type
@@ -22,8 +21,7 @@ import           TysWiredIn
 import           VarEnv
 
 import           Data.Bifunctor (first, second)
-import           Data.List      (mapAccumL)
-import           Data.Maybe     (fromMaybe, isJust)
+import           Data.Maybe     (isJust)
 
 import           Prelude        hiding (id)
 
@@ -301,70 +299,6 @@ forceTerm :: Expr -> Expr
 forceTerm e
   = -- assert "forceTerm" (text "Term is not a thunk:" <+> ppr e) (isThunkType (exprType e)) $
     App e []
-
---------------------------------------------------------------------------------
--- * Type checking StrictCore
-
-exprType :: Expr -> Type
--- Multi-values are expressed as unboxed tuples in the original Core type system
-exprType (MultiVal es)
-  = mkTupleTy Unboxed (map exprType es)
-
-exprType (Value val)
-  = valType val
-
-exprType (Var v)
-  = idType v
-
-exprType (Eval _ _ _)
-  = undefined
-
-valType :: Value -> Type
-
-valType (Lam [] e) -- thunk
-  = mkFunTy (mkTupleTy Unboxed []) (exprType e)
-
-valType (Lam bndrs e)
-  = foldr (\bndr ty -> mkFunTy (idType bndr) ty) (exprType e) bndrs
-
-valType (Con _ _)
-  = undefined
-
-valType (Lit lit)
-  = CoreUtils.exprType (CoreSyn.Lit lit)
-
-{-
-exprType (Let _ _ _)
-  = undefined
-
-exprType (ValRec _ _)
-  = undefined
-
-exprType (App fn []) -- Thunk evaluation
-  | Just ty <- isThunkType_maybe (exprType fn)
-  = ty
-
-exprType (App _ _)
-  = undefined
-
-exprType (Lam [] body) -- Thunk
-  = mkThunkType (exprType body)
-
-exprType (Lam _ _)
-  = undefined
-
-exprType (Case _ _)
-  = undefined
-
-exprType ty@Type{}
-  = panic "exprType" (text "Found Type:" <+> ppr ty)
-
-exprType (Cast _ co)
-  = pSnd (coercionKind co) -- TODO: Shouldn't we check type of the expression here?
-
-exprType (Coercion co)
-  = coercionType co
--}
 
 --------------------------------------------------------------------------------
 -- * Printing StrictCore

@@ -18,7 +18,6 @@ import           TyCoRep
 import           Type
 import           TysWiredIn
 import           Var
-import           VarSet
 
 import           Data.Maybe (isJust)
 
@@ -30,36 +29,59 @@ data Expr
   = MultiVal [Expr]
       -- ^ Return multiple values. (singleton list is OK)
 
-  | Lit Literal
+  | Value Value
 
   | Var Id
 
-  | Let Bndrs Expr Expr
+  | Eval Bndrs Expr Expr
       -- ^ Evaluation.
 
-  | ValRec [Bind] Expr
+  | Let Bind Expr
       -- ^ Allocation.
+
+  | Case Atom [Alt]
+      -- ^ Case doesn't do evaluation anymore, so we have `Atom` as scrutinee.
+      -- TODO: Do we need a binder here to bind the scrutinee?
 
   | App Expr [Expr]
       -- ^ Application.
-
-  | Lam Bndrs Expr
-      -- ^ Lambda takes multiple arguments now.
-
-  | Case Expr [Alt]
-      -- TODO: Do we need a binder here to bind the scrutinee?
 
   | Type Type
 
   | Cast Expr Coercion
 
   | Coercion Coercion
-    -- TODO: Is this needed?
+      -- TODO: Is this needed?
+
+data Bind
+  = NonRec CoreBndr Value
+  | Rec [(CoreBndr, Value)]
+
+-- | It's always work-safe to duplicate a value; you might duplicate code but
+-- never work.
+data Value
+  = Lam [CoreBndr] Expr
+      -- ^ Lambda takes multiple arguments now.
+  | Con DataCon [Atom]
+  | Lit Literal
+
+-- | Atoms are not allocated, and also work-safe.
+data Atom
+  = AVar Id
+  | ALit Literal
+
+  | AApp Atom Type
+      -- ^ This appears in e.g. f (g @ Int)
+      --                          ^^^^^^^^^
+
+  | ACast Atom Coercion
+      -- ^ Similar to the `AApp` case: f (g |> co)
+      --                                 ^^^^^^^^^
+
+  | AType Type
 
 type Bndr  = CoreBndr
 type Bndrs = [CoreBndr]
-
-type Bind  = (Bndrs, Expr)
 
 -- NOTE: We use GHC's AltCon but we need to translate DataCons of DataAlt!
 -- (translate field types so that they become thunks -- except the
@@ -67,7 +89,7 @@ type Bind  = (Bndrs, Expr)
 type Alt = (AltCon, Bndrs, Expr)
 
 --------------------------------------------------------------------------------
--- * Translating Haskell types
+-- * Translating Core types
 --
 -- For now we assume no unlifted types, and use unboxed tuple syntax for
 -- multi-arity values. Empty unboxed tuple is used in thunks. e.g. the thunk
@@ -86,6 +108,10 @@ type Alt = (AltCon, Bndrs, Expr)
 -- in original Core's type syntax. When translating original Core types, we just
 -- make everything thunks. Only exception is when we see a bang pattern in a
 -- DataCon.
+--
+-- TODO: We should allow unlifted types, but treat unboxed tuples specially.
+-- We should do "unarise" pass here and generate multi-value returns and
+-- multi-arity lambdas in places where unboxed tuples are used.
 
 translateType :: Type -> Type
 
@@ -117,7 +143,7 @@ translateType (CoercionTy co)
   = CoercionTy co -- FIXME: I think we need to translate coercions too...
 
 --------------------------------------------------------------------------------
--- * Compiling Haskell terms
+-- * Translating Core terms
 
 -- TODO: Need to translate binder types to be able to type check.
 
@@ -126,27 +152,25 @@ translateTerm (CoreSyn.Var v)
   = forceTerm (Var v)
 
 translateTerm (CoreSyn.Lit l)
-  = mkThunk (Lit l)
+  = Value (Lit l)
 
 translateTerm (CoreSyn.App e1 e2)
   = App (translateTerm e1) [ mkThunk (translateTerm e2) ]
 
-translateTerm e0@(CoreSyn.Lam _ _)
-  = let
-      (bndrs, e) = CoreSyn.collectBinders e0
-      -- TODO: Some of the binders are type binders...
-    in
-      mkThunk $
-        Lam bndrs (translateTerm e)
+translateTerm (CoreSyn.Lam arg body)
+  = Value (Lam [translateBndr arg] (translateTerm body))
 
 translateTerm (CoreSyn.Let bind e)
-  = ValRec (translateBind bind) (translateTerm e)
-      -- TODO: Should we wrap this with a thunk?
+  = Let (translateBind bind) (translateTerm e)
 
-translateTerm (CoreSyn.Case scrt _scrt_bndr _ty alts)
-  = -- TODO: ignoring scrutinee binder and type for now
-    mkThunk $
-      Case (translateTerm scrt) (translateAlts alts)
+translateTerm (CoreSyn.Case scrt scrt_bndr _scrt_ty alts)
+  = -- case doesn't evaluate anymore, so we first evaluate the scrutinee and
+    -- bind it to its new binder.
+    let
+      scrt_bndr' = translateBndr scrt_bndr
+    in
+      Eval [scrt_bndr'] (translateTerm scrt) $
+        Case (AVar scrt_bndr') (translateAlts alts)
 
 translateTerm (CoreSyn.Cast e co)
   = Cast (translateTerm e) co
@@ -161,25 +185,24 @@ translateTerm (CoreSyn.Type ty)
 translateTerm (CoreSyn.Coercion co)
   = Coercion co
 
-translateBind :: CoreBind -> [Bind]
+translateBind :: CoreBind -> Bind
 -- Q: Why not remove NonRec in GHC and use a singleton list instead?
 translateBind (CoreSyn.NonRec b rhs)
-  = [([b], translateTerm rhs)]
+  = NonRec (translateBndr b) (Lam [] (translateTerm rhs))
 translateBind (CoreSyn.Rec bs)
-  = map (\(b, rhs) -> ([b], translateTerm rhs)) bs
+  = Rec (map (\(b, rhs) -> (b, Lam [] (translateTerm rhs))) bs)
+
+translateBndr :: Id -> Id
+translateBndr v = v -- v `setIdType` translateType (idType v)
 
 translateAlts :: [CoreSyn.CoreAlt] -> [Alt]
 translateAlts = map translateAlt
 
 translateAlt :: CoreSyn.CoreAlt -> Alt
 translateAlt (DataAlt con, bndrs, rhs)
-  = let
-      bndr_strs = zipEqual (text "translateAlt") bndrs (dataConRepStrictness con)
-      strict_bndrs = mkVarSet $ map fst $ filter (isMarkedStrict . snd) bndr_strs
-    in
-      (DataAlt con, bndrs, translateTerm rhs)
-        -- TODO: need to update con (for argument info) and bndrs
-        -- TODO: strict bndrs shouldn't become thunks in the RHS
+  = (DataAlt con, map translateBndr bndrs, translateTerm rhs)
+      -- TODO: Could we do something better here? Some DataCon fields will be
+      -- marked as strict (bang patterns). Can we take advantage of that?
 
 translateAlt (lhs, bndrs, rhs)
   = (lhs, bndrs, translateTerm rhs) -- TODO: need to translate bndrs types
@@ -217,7 +240,7 @@ isThunkType = isJust . isThunkType_maybe
 -- | We need to explicitly build thunks in StrictCore. A thunk is just a nullary
 -- lambda.
 mkThunk :: Expr -> Expr
-mkThunk = Lam []
+mkThunk = Value . Lam []
 
 -- | Multi-arity is just unboxed tuple in the original Core. Note that unboxed
 -- tuples are the only unlifted types we allow for now.
@@ -228,24 +251,36 @@ mkMultiArityType = mkTupleTy Unboxed
 -- function. (remember that thunks are just nullary lambdas)
 forceTerm :: Expr -> Expr
 forceTerm e
-  = assert "forceTerm" (text "Term is not a thunk:" <+> ppr e) (isThunkType (exprType e)) $
+  = -- assert "forceTerm" (text "Term is not a thunk:" <+> ppr e) (isThunkType (exprType e)) $
     App e []
 
 --------------------------------------------------------------------------------
 -- * Type checking StrictCore
 
 exprType :: Expr -> Type
-
 -- Multi-values are expressed as unboxed tuples in the original Core type system
 exprType (MultiVal es)
   = mkTupleTy Unboxed (map exprType es)
 
-exprType (Lit lit)
-  = CoreUtils.exprType (CoreSyn.Lit lit)
+exprType (Value val)
+  = valType val
 
 exprType (Var v)
   = varType v
 
+
+valType :: Value -> Type
+
+valType (Lam _ _)
+  = undefined
+
+valType (Con _ _)
+  = undefined
+
+valType (Lit lit)
+  = CoreUtils.exprType (CoreSyn.Lit lit)
+
+{-
 exprType (Let _ _ _)
   = undefined
 
@@ -276,6 +311,7 @@ exprType (Cast _ co)
 
 exprType (Coercion co)
   = coercionType co
+-}
 
 --------------------------------------------------------------------------------
 -- * Printing StrictCore
@@ -291,24 +327,26 @@ pprExpr :: (SDoc -> SDoc) -> Expr -> SDoc
 pprExpr _ (MultiVal es)
   = angleBrackets (sep (map (pprExpr parens) es))
 
-pprExpr add_par (Lit lit)
-  = pprLiteral add_par lit
+pprExpr add_par (Value val)
+  = pprVal add_par val
 
 pprExpr _ (Var v)
   = ppr v
 
-pprExpr add_par (Let bndrs rhs e)
+pprExpr add_par (Eval bndrs rhs e)
   = add_par $
-    sep [ hang (text "let" <+> sep (punctuate comma (map ppr bndrs)) <+> char '=')
-            2 (pprExpr noParens rhs <+> text "in")
-        , pprExpr noParens e
-        ]
+    sep [ hang (text "eval" <+> sep (map ppr bndrs)) 2 (char '=' <+> ppr rhs) $$ text "in"
+        , pprExpr noParens e ]
 
-pprExpr add_par (ValRec binds body)
+pprExpr add_par (Let bind body)
   = add_par $
-    sep [ hang (text "valrec") 2 (pprBinds binds <+> text "in")
+    sep [ hang kw 2 (pprBind bind <+> text "} in")
         , pprExpr noParens body
         ]
+  where
+    kw = case bind of
+           NonRec _ _ -> text "let {"
+           Rec _      -> text "letrec {"
 
 pprExpr _ (App e []) -- thunk evaluation
   = char '~' <> pprExpr parens e
@@ -318,16 +356,9 @@ pprExpr _ (App e []) -- thunk evaluation
 pprExpr add_par (App f as)
   = add_par $ hang (pprExpr parens f) 2 (sep (map pprArg as))
 
-pprExpr _ (Lam [] e) -- thunk
-  = braces (pprExpr noParens e)
-
-pprExpr add_par (Lam as e)
-  = add_par $
-    hang (text "\\" <+> sep (map ppr as) <+> arrow) 2 (pprExpr noParens e)
-
 pprExpr add_par (Case scrt alts)
   = add_par $
-    sep [ sep [ hang (text "case") 2 (pprExpr noParens scrt)
+    sep [ sep [ hang (text "case") 2 (pprAtom noParens scrt)
               , text "of" <+> char '{'
               ]
         , nest 2 (vcat (punctuate semi (map pprAlt alts)))
@@ -343,13 +374,54 @@ pprExpr add_par (Coercion co)
 pprExpr add_par (Cast e co)
   = add_par (sep [pprExpr parens e, text "`cast`" <+> pprCo co])
 
+pprVal :: (SDoc -> SDoc) -> Value -> SDoc
+
+pprVal _ (Lam [] e) -- thunk
+  = braces (pprExpr noParens e)
+
+pprVal add_par (Lam as e)
+  = add_par $
+    hang (text "\\" <+> sep (map ppr as) <+> arrow) 2 (pprExpr noParens e)
+
+pprVal add_par (Con con as)
+  = add_par $
+    sep (ppr con : map (pprAtom parens) as)
+
+pprVal add_par (Lit lit)
+  = pprLiteral add_par lit
+
+pprAtom :: (SDoc -> SDoc) -> Atom -> SDoc
+
+pprAtom _ (AVar v)
+  = ppr v
+
+pprAtom add_par (ALit lit)
+  = pprLiteral add_par lit
+
+pprAtom add_par (AApp a ty)
+  = add_par $ pprAtom noParens a <+> char '@' <+> ppr ty
+
+pprAtom add_par (ACast a co)
+  = add_par $ pprAtom noParens a <+> text "|>" <+> ppr co
+
+pprAtom _ (AType ty)
+  = ppr ty
+
 pprBinds :: [Bind] -> SDoc
 pprBinds bs
   = vcat (map pprBind bs)
 
 pprBind :: Bind -> SDoc
-pprBind (bndrs, expr)
-  = hang (hsep (map ppr bndrs) <+> char '=') 2 (pprExpr noParens expr)
+
+pprBind (NonRec bndr val)
+  = pprBinding bndr val
+
+pprBind (Rec bs)
+  = vcat (map (\(bndr, val) -> pprBinding bndr val <> semi) bs)
+
+pprBinding :: Bndr -> Value -> SDoc
+pprBinding bndr val
+  = pprBndr LetBind bndr $$ hang (ppr bndr <+> equals) 2 (pprVal noParens val)
 
 pprAlt :: Alt -> SDoc
 pprAlt (con, args, rhs)

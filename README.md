@@ -28,6 +28,9 @@ These make some program transformations/ optimizations possible:
 
 * Do not use ANF.  Small reason: reduce clutter of extra lets.  Main reason: RULES. ToDo: elaborate this reasoning
 * Do not disinguish values (v) from expressions (e), as is done in the paper.  We could require that values are always bound with a ValRec, but it's clear that much is gained.
+* 
+NB: Core's `case` is expressed in Strict Core as `let` (to do evaluation) and a `case` (to do multi-way branch).
+
 ## Syntax
 
 We have an non-ANF syntax to be able to support rewrite rules and make
@@ -55,7 +58,7 @@ data Expr
 
   | Var Id
 
-  | Let [CoreBndr] Expr Expr
+  | Eval  [CoreBndr] Expr Expr
       -- Evaluation; non-recursive. 
       -- Note that we have a list of binders here, for multi-value returns.
 
@@ -87,6 +90,19 @@ data Expr
       -- TODO: Is this needed?
 ```
 
+Alternative 
+```
+  | ValRec Bind Expr
+  
+data Bind = NonRec CoreBndr Value 
+          | Rec [(CoreBndr, Value)]
+
+data Value = Lam [CoreBndr] Expr
+           | Con DataCon [Atom]
+           | Lit Literal
+           
+data Atom = AVar Id | ALit Literal | AApp Atom Type | AType Type
+```
 We use Core's `Type` and `Coercion` data types. Multi-value returns and multi-arity functions are
 expressed using unboxed tuples. Thunks are expressed as functions that take
 nullary unboxed tuple as argument. Unlifted types are currently forbidden.

@@ -26,11 +26,21 @@ These make some program transformations/ optimizations possible:
 
 ## Choices
 
-* Do not use ANF.  Small reason: reduce clutter of extra lets.  Main reason: RULES. ToDo: elaborate this reasoning
-* Do not disinguish values (v) from expressions (e), as is done in the paper.  We could require that values are always bound with a ValRec, but it's clear that much is gained.
-* Use unboxed-tuple-type for <>; do Unarise to eliminate user-supplied unboxed tuples when creating Strict Core.  After all, unboxed tuples ARE multi-values, so it'd be very odd to have an IL that had both unboxed tuples and multi-values.
-* 
-NB: Core's `case` is expressed in Strict Core as `let` (to do evaluation) and a `case` (to do multi-way branch).
+* Do not use ANF.  Small reason: reduce clutter of extra lets.  Main reason:
+  RULES. ToDo: elaborate this reasoning
+
+* Do not disinguish values (v) from expressions (e), as is done in the paper.
+  We could require that values are always bound with a ValRec, but it's clear
+  that much is gained.
+
+* Use unboxed-tuple-type for <>; do Unarise to eliminate user-supplied unboxed
+  tuples when creating Strict Core.  After all, unboxed tuples ARE multi-values,
+  so it'd be very odd to have an IL that had both unboxed tuples and
+  multi-values.
+
+
+NB: Core's `case` is expressed in Strict Core as `let` (to do evaluation) and a
+`case` (to do multi-way branch).
 
 NB: Transformation rules: eval-of-case, eval-of-eval
 
@@ -62,7 +72,7 @@ data Expr
   | Var Id
 
   | Eval  [CoreBndr] Expr Expr
-      -- Evaluation; non-recursive. 
+      -- Evaluation; non-recursive.
       -- Note that we have a list of binders here, for multi-value returns.
 
   | ValRec [([CoreBndr], Expr)] Expr
@@ -93,8 +103,9 @@ data Expr
       -- TODO: Is this needed?
 ```
 
-Alternative 
-```
+Alternative
+
+```haskell
 data Expr = ...
 
   | Eval  [CoreBndr] Expr Expr
@@ -105,8 +116,8 @@ data Expr = ...
   | Case Atom  [Alt]
 
   | Value Value
-  
-data Bind = NonRec CoreBndr Value 
+
+data Bind = NonRec CoreBndr Value
           | Rec [(CoreBndr, Value)]
 
 data Value = Lam [CoreBndr] Expr
@@ -115,16 +126,19 @@ data Value = Lam [CoreBndr] Expr
            -- It's always work-safe to duplicate a value;
            -- you might duplicate code but never work
            -- ToDo: what about big lambdas only
-           
+
 data Atom = AVar Id | ALit Literal | AApp Atom Type | AType Type | ACast Atom Coercion
 ```
-Questions:
-* Perhaps make `type Atom` = `Expr`, but a Lint-checked invariant of exprIsTrivial?
 
-We use Core's `Type` and `Coercion` data types. Multi-value returns and multi-arity functions are
-expressed using unboxed tuples. Thunks are expressed as functions that take
-nullary unboxed tuple as argument. Unlifted types are currently forbidden.
-(unboxed tuples are not used in user programs, we use it internally)
+Questions:
+* Perhaps make `type Atom` = `Expr`, but a Lint-checked invariant of
+  exprIsTrivial?
+
+We use Core's `Type` and `Coercion` data types. Multi-value returns and
+multi-arity functions are expressed using unboxed tuples. Thunks are expressed
+as functions that take nullary unboxed tuple as argument. Unlifted types are
+currently forbidden. (unboxed tuples are not used in user programs, we use it
+internally)
 
 Current concrete syntax (used by the pretty-printer).  ToDo: write down the syntax.
 

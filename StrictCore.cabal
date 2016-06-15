@@ -14,6 +14,7 @@ cabal-version:       >=1.10
 
 library
   exposed-modules:
+    StrictCore.Lint
     StrictCore.Plugin
     StrictCore.Syntax
 

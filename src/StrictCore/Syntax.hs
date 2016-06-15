@@ -61,6 +61,13 @@ data Bind
   = NonRec CoreBndr Value
   | Rec [(CoreBndr, Value)]
 
+bindersOf :: Bind -> [CoreBndr]
+bindersOf (NonRec b _) = [b]
+bindersOf (Rec bs)     = map fst bs
+
+bindersOfBinds :: [Bind] -> [CoreBndr]
+bindersOfBinds = concatMap bindersOf
+
 -- | It's always work-safe to duplicate a value; you might duplicate code but
 -- never work.
 data Value

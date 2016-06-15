@@ -17,5 +17,5 @@ installPlugin _ todos
 
 pass :: ModGuts -> CoreM ModGuts
 pass guts@ModGuts{ mg_binds = binds }
-  = do let strictCoreBinds = map translateBind binds
+  = do let strictCoreBinds = map (translateBind initSCVars) binds
        pprTrace "StrictCore pass" (ppr strictCoreBinds) (return guts)

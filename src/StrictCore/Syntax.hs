@@ -3,23 +3,29 @@ module StrictCore.Syntax where
 --------------------------------------------------------------------------------
 
 -- Explicitly import CoreSyn stuff as we re-define some of the stuff defined
-import           CoreSyn    (AltCon, AltCon (..), CoreBind, CoreBndr, CoreExpr)
+import           CoreSyn        (AltCon, AltCon (..), CoreBind, CoreBndr,
+                                 CoreExpr)
 import qualified CoreSyn
 import qualified CoreUtils
 
 import           BasicTypes
-import           Coercion   (coercionKind, coercionType)
+import           Coercion       (coercionKind, coercionType)
 import           DataCon
+import           Id
 import           Literal
-import           Outputable hiding (panic)
-import           Pair       (pSnd)
+import           Outputable     hiding (panic)
+import           Pair           (pSnd)
 import           TyCon
 import           TyCoRep
 import           Type
 import           TysWiredIn
-import           Var
+import           VarEnv
 
-import           Data.Maybe (isJust)
+import           Data.Bifunctor (first, second)
+import           Data.List      (mapAccumL)
+import           Data.Maybe     (fromMaybe, isJust)
+
+import           Prelude        hiding (id)
 
 --------------------------------------------------------------------------------
 -- * Terms
@@ -113,13 +119,14 @@ type Alt = (AltCon, Bndrs, Expr)
 -- We should do "unarise" pass here and generate multi-value returns and
 -- multi-arity lambdas in places where unboxed tuples are used.
 
+-- This just makes function arguments thunks.
 translateType :: Type -> Type
 
--- base types become thunks
-translateType ty@(TyConApp _ [])
-  = mkFunTy (mkTupleTy Unboxed []) ty
+translateType ty
+  | Just (arg_ty, ret_ty) <- splitFunTy_maybe ty
+  = mkFunTy (mkThunkType (translateType arg_ty)) (translateType ret_ty)
 
--- the rest is just traversal.
+-- rest is just traversal
 
 translateType ty@(TyVarTy _)
   = ty
@@ -145,70 +152,108 @@ translateType (CoercionTy co)
 --------------------------------------------------------------------------------
 -- * Translating Core terms
 
--- TODO: Need to translate binder types to be able to type check.
+-- | Mapping from original binders to binders with updated types. We could just
+-- update every identifier's type manually, but we'd lose sharing. (does not
+-- effect correctness, but may make things less efficient)
+type SCVars = VarEnv Var
 
-translateTerm :: CoreExpr -> Expr
-translateTerm (CoreSyn.Var v)
-  = forceTerm (Var v)
+initSCVars :: SCVars
+initSCVars = emptyVarEnv
 
-translateTerm (CoreSyn.Lit l)
+translateTerm :: SCVars -> CoreExpr -> Expr
+
+translateTerm env (CoreSyn.Var v)
+  | isDataConWorkId v
+  = -- FIXME: We need to replace these with new functions... (section 4.3)
+    Var v
+
+{-
+  | otherwise
+  = forceTerm (Var (fromMaybe err (lookupVarEnv env v)))
+  where
+    err = panic "translateTerm" (text "Can't find var in env:" <+> ppr v $$ ppr env)
+-}
+
+  | Just v' <- lookupVarEnv env v
+  = forceTerm (Var v')
+
+  -- FIXME: For libraries...
+  | otherwise
+  = Var v
+
+translateTerm _ (CoreSyn.Lit l)
   = Value (Lit l)
 
-translateTerm (CoreSyn.App e1 e2)
+translateTerm env (CoreSyn.App e1 e2)
   | CoreSyn.isTypeArg e2
-  = App (translateTerm e1) [ translateTerm e2 ]
+  = App (translateTerm env e1) [ translateTerm env e2 ]
   | otherwise
-  = App (translateTerm e1) [ mkThunk (translateTerm e2) ]
+  = App (translateTerm env e1) [ mkThunk (translateTerm env e2) ]
 
-translateTerm (CoreSyn.Lam arg body)
-  = Value (Lam [translateBndr arg] (translateTerm body))
+translateTerm env (CoreSyn.Lam arg body)
+  = Value (Lam [arg'] (translateTerm env' body))
+  where
+    arg' = translateBndr arg
+    env' = extendVarEnv env arg arg'
 
-translateTerm (CoreSyn.Let bind e)
-  = Let (translateBind bind) (translateTerm e)
+translateTerm env (CoreSyn.Let bind e)
+  = Let bind' (translateTerm env' e)
+  where
+    (env', bind') = translateBind env bind
 
-translateTerm (CoreSyn.Case scrt scrt_bndr _scrt_ty alts)
+translateTerm env (CoreSyn.Case scrt scrt_bndr _scrt_ty alts)
   = -- case doesn't evaluate anymore, so we first evaluate the scrutinee and
     -- bind it to its new binder.
     let
       scrt_bndr' = translateBndr scrt_bndr
+      env'       = extendVarEnv env scrt_bndr scrt_bndr'
+      scrt'      = translateTerm env scrt -- using original env
     in
-      Eval [scrt_bndr'] (translateTerm scrt) $
-        Case (AVar scrt_bndr') (translateAlts alts)
+      Eval [scrt_bndr'] scrt' $
+        Case (AVar scrt_bndr') (translateAlts env' alts)
 
-translateTerm (CoreSyn.Cast e co)
-  = Cast (translateTerm e) co
+translateTerm env (CoreSyn.Cast e co)
+  = Cast (translateTerm env e) co
 
-translateTerm CoreSyn.Tick{}
+translateTerm _ CoreSyn.Tick{}
   = panic "translateTerm" (text "Tick is not supported")
       -- I don't want to think about this right now ...
 
-translateTerm (CoreSyn.Type ty)
+translateTerm _ (CoreSyn.Type ty)
   = Type ty
 
-translateTerm (CoreSyn.Coercion co)
+translateTerm _ (CoreSyn.Coercion co)
   = Coercion co
 
-translateBind :: CoreBind -> Bind
--- Q: Why not remove NonRec in GHC and use a singleton list instead?
-translateBind (CoreSyn.NonRec b rhs)
-  = NonRec (translateBndr b) (Lam [] (translateTerm rhs))
-translateBind (CoreSyn.Rec bs)
-  = Rec (map (\(b, rhs) -> (b, Lam [] (translateTerm rhs))) bs)
+translateBind :: SCVars -> CoreBind -> (SCVars, Bind)
+
+translateBind env (CoreSyn.NonRec b rhs)
+  = ( extendVarEnv env b b'
+    , NonRec b' (Lam [] (translateTerm env rhs)) )
+  where
+    b' = translateBndr b
+
+translateBind env (CoreSyn.Rec bs)
+  = ( env', Rec bs'' )
+  where
+    bs'  = map (first translateBndr) bs
+    env' = extendVarEnvList env (zipWith (,) (map fst bs) (map fst bs'))
+    bs'' = map (second (Lam [] . translateTerm env')) bs'
+
+translateAlts :: SCVars -> [CoreSyn.CoreAlt] -> [Alt]
+translateAlts env alts = map (translateAlt env) alts
+
+translateAlt :: SCVars -> CoreSyn.CoreAlt -> Alt
+translateAlt env (lhs, bndrs, rhs)
+  = (lhs, bndrs', translateTerm env' rhs)
+  where
+    bndrs' = map translateBndr bndrs
+    env'   = extendVarEnvList env (zip bndrs bndrs')
+
+--------------------------------------------------------------------------------
 
 translateBndr :: Id -> Id
-translateBndr v = v -- v `setIdType` translateType (idType v)
-
-translateAlts :: [CoreSyn.CoreAlt] -> [Alt]
-translateAlts = map translateAlt
-
-translateAlt :: CoreSyn.CoreAlt -> Alt
-translateAlt (DataAlt con, bndrs, rhs)
-  = (DataAlt con, map translateBndr bndrs, translateTerm rhs)
-      -- TODO: Could we do something better here? Some DataCon fields will be
-      -- marked as strict (bang patterns). Can we take advantage of that?
-
-translateAlt (lhs, bndrs, rhs)
-  = (lhs, bndrs, translateTerm rhs) -- TODO: need to translate bndrs types
+translateBndr id = id `setIdType` mkThunkType (translateType (idType id))
 
 --------------------------------------------------------------------------------
 -- Building thunks and multi-values. If we change representation of
@@ -269,12 +314,18 @@ exprType (Value val)
   = valType val
 
 exprType (Var v)
-  = varType v
+  = idType v
+
+exprType (Eval _ _ _)
+  = undefined
 
 valType :: Value -> Type
 
-valType (Lam _ _)
-  = undefined
+valType (Lam [] e) -- thunk
+  = mkFunTy (mkTupleTy Unboxed []) (exprType e)
+
+valType (Lam bndrs e)
+  = foldr (\bndr ty -> mkFunTy (idType bndr) ty) (exprType e) bndrs
 
 valType (Con _ _)
   = undefined
@@ -325,7 +376,7 @@ instance Outputable Bind where
   ppr = pprBind
 
 noParens :: SDoc -> SDoc
-noParens = id
+noParens d = d
 
 pprExpr :: (SDoc -> SDoc) -> Expr -> SDoc
 

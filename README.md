@@ -24,6 +24,10 @@ These make some program transformations/ optimizations possible:
 - A shared intermediate language for functional languages?
   (Idris, ML family, dynamically typed ones?)
 
+## Choices
+
+* Do not use ANF.  Small reason: reduce clutter of extra lets.  Main reason: RULES. ToDo: elaborate this reasoning
+* Do not disinguish values (v) from expressions (e), as is done in the paper.  We could require that values are always bound with a ValRec, but it's clear that much is gained.
 ## Syntax
 
 We have an non-ANF syntax to be able to support rewrite rules and make

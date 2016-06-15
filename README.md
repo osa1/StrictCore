@@ -86,7 +86,7 @@ expressed using unboxed tuples. Thunks are expressed as functions that take
 nullary unboxed tuple as argument. Unlifted types are currently forbidden.
 (unboxed tuples are not used in user programs, we use it internally)
 
-Current concrete syntax:
+Current concrete syntax (used by the pretty-printer)
 
 ```
 <a, b, ...>         -- multi-value

@@ -81,7 +81,7 @@ data Expr
       -- TODO: Is this needed?
 ```
 
-We use Core's type syntax. Multi-value returns and multi-arity functions are
+We use Core's `Type` and `Coercion` data types. Multi-value returns and multi-arity functions are
 expressed using unboxed tuples. Thunks are expressed as functions that take
 nullary unboxed tuple as argument. Unlifted types are currently forbidden.
 (unboxed tuples are not used in user programs, we use it internally)

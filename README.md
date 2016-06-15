@@ -40,6 +40,8 @@ already, without any changes ...)
 Current abstract syntax:
 
 ```haskell
+type CoreBndr = Id
+
 data Expr
   = MultiVal [Expr]
       -- Return multiple values.
@@ -50,8 +52,8 @@ data Expr
   | Var Id
 
   | Let [CoreBndr] Expr Expr
-      -- Evaluation. Note that we have a list of binders here, for multi-value
-      -- returns.
+      -- Evaluation; non-recursive. 
+      -- Note that we have a list of binders here, for multi-value returns.
 
   | ValRec [([CoreBndr], Expr)] Expr
       -- Allocation. We don't have a NonRec/Rec distinction in this language.

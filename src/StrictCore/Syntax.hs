@@ -42,7 +42,7 @@ data Expr
   | Let Bind Expr
       -- ^ Allocation.
 
-  | Case Atom [Alt]
+  | Case Atom Type [Alt]
       -- ^ Case doesn't do evaluation anymore, so we have `Atom` as scrutinee.
       -- TODO: Do we need a binder here to bind the scrutinee?
 
@@ -216,21 +216,24 @@ translateTerm env (CoreSyn.Lam arg body)
         arg' = translateBndr arg
         env' = extendVarEnv env arg arg'
 
+-- TODO: Subsitute when Type is bound in a Let
+
 translateTerm env (CoreSyn.Let bind e)
   = Let bind' (translateTerm env' e)
   where
     (env', bind') = translateBind env bind
 
-translateTerm env (CoreSyn.Case scrt scrt_bndr _scrt_ty alts)
+translateTerm env (CoreSyn.Case scrt scrt_bndr alt_ty alts)
   = -- case doesn't evaluate anymore, so we first evaluate the scrutinee and
     -- bind it to its new binder.
     let
       scrt_bndr' = translateBndr scrt_bndr
       env'       = extendVarEnv env scrt_bndr scrt_bndr'
+      alt_ty'    = translateType alt_ty
       scrt'      = translateTerm env scrt -- using original env
     in
       Eval [scrt_bndr'] scrt' $
-        Case (AVar scrt_bndr') (translateAlts env' alts)
+        Case (AVar scrt_bndr') alt_ty' (translateAlts env' alts)
 
 translateTerm env (CoreSyn.Cast e co)
   = Cast (translateTerm env e) co
@@ -374,7 +377,7 @@ pprExpr _ (App e []) -- thunk evaluation
 pprExpr add_par (App f as)
   = add_par $ hang (pprExpr parens f) 2 (sep (map pprArg as))
 
-pprExpr add_par (Case scrt alts)
+pprExpr add_par (Case scrt _ alts)
   = add_par $
     sep [ sep [ hang (text "case") 2 (pprAtom noParens scrt)
               , text "of" <+> char '{'

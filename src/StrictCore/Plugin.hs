@@ -2,8 +2,10 @@ module StrictCore.Plugin (plugin) where
 
 --------------------------------------------------------------------------------
 
+import CoreLint (displayLintResults)
 import GhcPlugins
 
+import StrictCore.Lint
 import StrictCore.Syntax
 
 --------------------------------------------------------------------------------
@@ -17,5 +19,10 @@ installPlugin _ todos
 
 pass :: ModGuts -> CoreM ModGuts
 pass guts@ModGuts{ mg_binds = binds }
-  = do let strictCoreBinds = map (translateBind initSCVars) binds
-       pprTrace "StrictCore pass" (ppr strictCoreBinds) (return guts)
+  = do let strictCoreBinds = map (snd . translateBind initSCVars) binds
+       pprTrace "StrictCore pass" (ppr strictCoreBinds) (return ())
+       dflags <- getDynFlags
+       let (warns, errs) = lintCoreProgram dflags [] strictCoreBinds
+       liftIO $ displayLintResults dflags (CoreDoPluginPass "StrictCore" undefined) warns errs []
+       return guts
+

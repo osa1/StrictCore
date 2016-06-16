@@ -2,9 +2,9 @@ module StrictCore.Plugin (plugin) where
 
 --------------------------------------------------------------------------------
 
-import           GhcPlugins
+import GhcPlugins
 
-import           StrictCore.Syntax
+import StrictCore.Syntax
 
 --------------------------------------------------------------------------------
 

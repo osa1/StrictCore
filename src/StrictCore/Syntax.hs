@@ -3,27 +3,26 @@ module StrictCore.Syntax where
 --------------------------------------------------------------------------------
 
 -- Explicitly import CoreSyn stuff as we re-define some of the stuff defined
-import           CoreSyn        (AltCon, AltCon (..), CoreBind, CoreBndr,
-                                 CoreExpr)
+import CoreSyn (AltCon, AltCon (..), CoreBind, CoreBndr, CoreExpr)
 import qualified CoreSyn
-import           CoreUtils      ()
+import CoreUtils ()
 
-import           BasicTypes
-import           Coercion       (coercionType)
-import           DataCon
-import           Id
-import           Literal
-import           Outputable     hiding (panic)
-import           TyCon
-import           TyCoRep
-import           Type
-import           TysWiredIn
-import           VarEnv
+import BasicTypes
+import Coercion (coercionType)
+import DataCon
+import Id
+import Literal
+import Outputable hiding (panic)
+import TyCon
+import TyCoRep
+import Type
+import TysWiredIn
+import VarEnv
 
-import           Data.Bifunctor (first, second)
-import           Data.Maybe     (isJust)
+import Data.Bifunctor (first, second)
+import Data.Maybe (isJust)
 
-import           Prelude        hiding (id)
+import Prelude hiding (id)
 
 --------------------------------------------------------------------------------
 -- * Terms
@@ -71,10 +70,22 @@ bindersOfBinds = concatMap bindersOf
 -- | It's always work-safe to duplicate a value; you might duplicate code but
 -- never work.
 data Value
-  = Lam [CoreBndr] Expr
+  = Lam LamBndr Expr
       -- ^ Lambda takes multiple arguments now.
   | Con DataCon [Atom]
+      -- ^ _Saturated_ constructor application.
   | Lit Literal
+
+-- FIXME: I'm not sure about this ... I think It doesn't make sense to have
+-- curried vs. non-curried distinction in type arguments, so we have these two
+-- types of argument binders here.
+data LamBndr
+  = TyBndr CoreBndr
+  | ValBndrs [CoreBndr]
+
+lamBndrBndrs :: LamBndr -> [CoreBndr]
+lamBndrBndrs (TyBndr v)    = [v]
+lamBndrBndrs (ValBndrs vs) = vs
 
 -- | Atoms are not allocated, and also work-safe.
 data Atom
@@ -196,10 +207,14 @@ translateTerm env (CoreSyn.App e1 e2)
   = App (translateTerm env e1) [ mkThunk (translateTerm env e2) ]
 
 translateTerm env (CoreSyn.Lam arg body)
-  = Value (Lam [arg'] (translateTerm env' body))
-  where
-    arg' = translateBndr arg
-    env' = extendVarEnv env arg arg'
+  | isTyVar arg
+  = Value (Lam (TyBndr arg) (translateTerm (extendVarEnv env arg arg) body))
+
+  | otherwise
+  = Value (Lam (ValBndrs [arg']) (translateTerm env' body))
+      where
+        arg' = translateBndr arg
+        env' = extendVarEnv env arg arg'
 
 translateTerm env (CoreSyn.Let bind e)
   = Let bind' (translateTerm env' e)
@@ -234,7 +249,7 @@ translateBind :: SCVars -> CoreBind -> (SCVars, Bind)
 
 translateBind env (CoreSyn.NonRec b rhs)
   = ( extendVarEnv env b b'
-    , NonRec b' (Lam [] (translateTerm env rhs)) )
+    , NonRec b' (Lam (ValBndrs []) (translateTerm env rhs)) )
   where
     b' = translateBndr b
 
@@ -243,7 +258,7 @@ translateBind env (CoreSyn.Rec bs)
   where
     bs'  = map (first translateBndr) bs
     env' = extendVarEnvList env (zipWith (,) (map fst bs) (map fst bs'))
-    bs'' = map (second (Lam [] . translateTerm env')) bs'
+    bs'' = map (second (Lam (ValBndrs []) . translateTerm env')) bs'
 
 translateAlts :: SCVars -> [CoreSyn.CoreAlt] -> [Alt]
 translateAlts env alts = map (translateAlt env) alts
@@ -293,7 +308,7 @@ isThunkType = isJust . isThunkType_maybe
 -- | We need to explicitly build thunks in StrictCore. A thunk is just a nullary
 -- lambda.
 mkThunk :: Expr -> Expr
-mkThunk = Value . Lam []
+mkThunk = Value . Lam (ValBndrs [])
 
 -- | Multi-arity is just unboxed tuple in the original Core. Note that unboxed
 -- tuples are the only unlifted types we allow for now.
@@ -315,6 +330,12 @@ instance Outputable Expr where
 
 instance Outputable Bind where
   ppr = pprBind
+
+instance Outputable Atom where
+  ppr = pprAtom noParens
+
+instance Outputable LamBndr where
+  ppr = pprLamBndr
 
 noParens :: SDoc -> SDoc
 noParens d = d
@@ -373,12 +394,12 @@ pprExpr add_par (Cast e co)
 
 pprVal :: (SDoc -> SDoc) -> Value -> SDoc
 
-pprVal _ (Lam [] e) -- thunk
+pprVal _ (Lam (ValBndrs []) e) -- thunk
   = braces (pprExpr noParens e)
 
 pprVal add_par (Lam as e)
   = add_par $
-    hang (text "\\" <+> sep (map ppr as) <+> arrow) 2 (pprExpr noParens e)
+    hang (text "\\" <+> ppr as <+> arrow) 2 (pprExpr noParens e)
 
 pprVal add_par (Con con as)
   = add_par $
@@ -442,6 +463,10 @@ pprArg (Coercion co)
   = text "@~" <+> pprCo co
 pprArg e
   = pprExpr parens e
+
+pprLamBndr :: LamBndr -> SDoc
+pprLamBndr (TyBndr v)    = ppr v
+pprLamBndr (ValBndrs vs) = sep (map ppr vs)
 
 --------------------------------------------------------------------------------
 -- * Utils

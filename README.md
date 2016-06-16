@@ -166,3 +166,15 @@ Type syntax:
 ## Translation from Core to StrictCore
 
 We follow Figures 9 and 10 of the paper.
+
+## How to run
+
+We use Core's linter, but GHC doesn't export its linter API. So you need to
+clone my fork of GHC, switch to `strict-core` branch, and install it. Then
+install this library, and compile programs:
+
+```
+$ ghc Test.hs -fplugin=StrictCore.Plugin
+```
+
+It should work like stock GHC, except it should also print StrictCore program.

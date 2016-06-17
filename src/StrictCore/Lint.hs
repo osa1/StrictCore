@@ -55,9 +55,15 @@ lintSingleBind bndr rhs
 
 lintValue :: Value -> LintM Type
 
-lintValue (Lam as body)
-  = addLoc (BodyOfLetRec (lamBndrBndrs as)) $ -- FIXME: LambdaBodyOf wants an Id so can't use it here
-    lintBinders (lamBndrBndrs as) $ \as' -> do
+lintValue (Lam (TyBndr ty_var) body)
+  = addLoc (LambdaBodyOf ty_var) $
+    lintBinder ty_var $ \ty_var' -> do
+      body_ty <- lintExpr body
+      return (mkLamType ty_var' body_ty)
+
+lintValue (Lam (ValBndrs as) body)
+  = addLoc (BodyOfLetRec as) $ -- FIXME: LambdaBodyOf wants an Id so can't use it here
+    lintBinders as $ \as' -> do
       body_ty <- lintExpr body
       return (FunTy (mkMultiValTy (map idType as')) body_ty)
 

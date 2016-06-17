@@ -87,10 +87,6 @@ data LamBndr
   = TyBndr CoreBndr
   | ValBndrs [CoreBndr]
 
-lamBndrBndrs :: LamBndr -> [CoreBndr]
-lamBndrBndrs (TyBndr v)    = [v]
-lamBndrBndrs (ValBndrs vs) = vs
-
 -- | Atoms are not allocated, and also work-safe.
 data Atom
   = AVar Id
@@ -182,6 +178,9 @@ initSCVars = emptyVarEnv
 translateTerm :: SCVars -> CoreExpr -> UniqSM Expr
 
 translateTerm env (CoreSyn.Var v)
+  | isTyVar v
+  = return (Var v)
+
   | Just v' <- lookupVarEnv env v
   = return (forceTerm (Var v'))
 
@@ -209,7 +208,7 @@ translateTerm env (CoreSyn.App e1 e2)
 
 translateTerm env (CoreSyn.Lam arg body)
   | isTyVar arg
-  = do body' <- translateTerm (extendVarEnv env arg arg) body
+  = do body' <- translateTerm env body
        return (Value (Lam (TyBndr arg) body'))
 
   | otherwise

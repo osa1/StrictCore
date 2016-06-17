@@ -139,7 +139,7 @@ type Alt = (AltCon, Bndrs, Expr)
 -- We should do "unarise" pass here and generate multi-value returns and
 -- multi-arity lambdas in places where unboxed tuples are used.
 
--- This just makes function arguments thunks.
+-- This just makes function arguments thunks. Figure 9 in the paper.
 translateType :: Type -> Type
 
 translateType (FunTy arg_ty ret_ty)
@@ -182,16 +182,16 @@ initSCVars = emptyVarEnv
 translateTerm :: SCVars -> CoreExpr -> UniqSM Expr
 
 translateTerm env (CoreSyn.Var v)
-  | isDataConWorkId v
-  = -- FIXME: We need to replace these with new functions... (section 4.3)
-    return (Var v)
-
   | Just v' <- lookupVarEnv env v
   = return (forceTerm (Var v'))
 
-  -- FIXME: For libraries...
+  | isDataConWorkId v
+  = -- FIXME: We need to replace these with new functions... (section 4.3)
+    return (forceTerm (Var (translateBndr v)))
+
   | otherwise
-  = return (Var v)
+  = -- FIXME: For libraries...
+    return (forceTerm (Var (translateBndr v)))
 
 translateTerm _ (CoreSyn.Lit l)
   = return (Value (Lit l))
@@ -213,11 +213,10 @@ translateTerm env (CoreSyn.Lam arg body)
        return (Value (Lam (TyBndr arg) body'))
 
   | otherwise
-  = do body' <- translateTerm env' body
-       return (Value (Lam (ValBndrs [arg']) body'))
-       where
-         arg' = translateBndr arg
-         env' = extendVarEnv env arg arg'
+  = do let arg' = translateBndr arg
+           env' = extendVarEnv env arg arg'
+       body' <- translateTerm env' body
+       return (Value (Lam (ValBndrs [ arg' ]) body'))
 
 -- TODO: Subsitute when Type is bound in a Let
 
@@ -232,7 +231,7 @@ translateTerm env (CoreSyn.Case scrt scrt_bndr alt_ty alts)
        let
          scrt_bndr' = translateBndr scrt_bndr
          env'       = extendVarEnv env scrt_bndr scrt_bndr'
-         alt_ty'    = translateType alt_ty
+         alt_ty'    = mkThunkType (translateType alt_ty)
 
        scrt' <- translateTerm env scrt -- using original env
        evald_scrt_bndr <- mkSysLocalOrCoVarM (fsLit "scrt") (translateType (idType scrt_bndr))
@@ -287,7 +286,12 @@ translateAlt env (lhs, bndrs, rhs)
 --------------------------------------------------------------------------------
 
 translateBndr :: Id -> Id
-translateBndr id = id `setIdType` mkThunkType (translateType (idType id))
+translateBndr id
+  = id `setIdType` mkThunkType (translateType (idType id))
+  -- = let
+  --     (tyvars, ty) = splitForAllTyVarBndrs (idType id)
+  --   in
+  --     id `setIdType` mkForAllTys tyvars (mkThunkType ty)
 
 --------------------------------------------------------------------------------
 -- Building thunks and multi-values. If we change representation of

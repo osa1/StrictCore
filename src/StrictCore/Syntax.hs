@@ -1,3 +1,5 @@
+{-# LANGUAGE TupleSections #-}
+
 module StrictCore.Syntax where
 
 --------------------------------------------------------------------------------
@@ -10,6 +12,7 @@ import CoreUtils ()
 import BasicTypes
 import Coercion (coercionType)
 import DataCon
+import FastString
 import Id
 import Literal
 import Outputable hiding (panic)
@@ -17,9 +20,10 @@ import TyCon
 import TyCoRep
 import Type
 import TysWiredIn
+import UniqSupply
 import VarEnv
 
-import Data.Bifunctor (first, second)
+import Data.Bifunctor (first)
 import Data.Maybe (isJust)
 
 import Prelude hiding (id)
@@ -175,99 +179,107 @@ type SCVars = VarEnv Var
 initSCVars :: SCVars
 initSCVars = emptyVarEnv
 
-translateTerm :: SCVars -> CoreExpr -> Expr
+translateTerm :: SCVars -> CoreExpr -> UniqSM Expr
 
 translateTerm env (CoreSyn.Var v)
   | isDataConWorkId v
   = -- FIXME: We need to replace these with new functions... (section 4.3)
-    Var v
-
-{-
-  | otherwise
-  = forceTerm (Var (fromMaybe err (lookupVarEnv env v)))
-  where
-    err = panic "translateTerm" (text "Can't find var in env:" <+> ppr v $$ ppr env)
--}
+    return (Var v)
 
   | Just v' <- lookupVarEnv env v
-  = forceTerm (Var v')
+  = return (forceTerm (Var v'))
 
   -- FIXME: For libraries...
   | otherwise
-  = Var v
+  = return (Var v)
 
 translateTerm _ (CoreSyn.Lit l)
-  = Value (Lit l)
+  = return (Value (Lit l))
 
 translateTerm env (CoreSyn.App e1 e2)
   | CoreSyn.isTypeArg e2
-  = App (translateTerm env e1) [ translateTerm env e2 ]
+  = do e1' <- translateTerm env e1
+       e2' <- translateTerm env e2
+       return (App e1' [ e2' ])
+
   | otherwise
-  = App (translateTerm env e1) [ mkThunk (translateTerm env e2) ]
+  = do e1' <- translateTerm env e1
+       e2' <- translateTerm env e2
+       return (App e1' [ mkThunk e2' ])
 
 translateTerm env (CoreSyn.Lam arg body)
   | isTyVar arg
-  = Value (Lam (TyBndr arg) (translateTerm (extendVarEnv env arg arg) body))
+  = do body' <- translateTerm (extendVarEnv env arg arg) body
+       return (Value (Lam (TyBndr arg) body'))
 
   | otherwise
-  = Value (Lam (ValBndrs [arg']) (translateTerm env' body))
-      where
-        arg' = translateBndr arg
-        env' = extendVarEnv env arg arg'
+  = do body' <- translateTerm env' body
+       return (Value (Lam (ValBndrs [arg']) body'))
+       where
+         arg' = translateBndr arg
+         env' = extendVarEnv env arg arg'
 
 -- TODO: Subsitute when Type is bound in a Let
 
 translateTerm env (CoreSyn.Let bind e)
-  = Let bind' (translateTerm env' e)
-  where
-    (env', bind') = translateBind env bind
+  = do (env', bind') <- translateBind env bind
+       e' <- translateTerm env' e
+       return (Let bind' e')
 
 translateTerm env (CoreSyn.Case scrt scrt_bndr alt_ty alts)
-  = -- case doesn't evaluate anymore, so we first evaluate the scrutinee and
-    -- bind it to its new binder.
-    let
-      scrt_bndr' = translateBndr scrt_bndr
-      env'       = extendVarEnv env scrt_bndr scrt_bndr'
-      alt_ty'    = translateType alt_ty
-      scrt'      = translateTerm env scrt -- using original env
-    in
-      Eval [scrt_bndr'] scrt' $
-        Case (AVar scrt_bndr') alt_ty' (translateAlts env' alts)
+  = do -- case doesn't evaluate anymore, so we first evaluate the scrutinee and
+       -- bind it to its new binder.
+       let
+         scrt_bndr' = translateBndr scrt_bndr
+         env'       = extendVarEnv env scrt_bndr scrt_bndr'
+         alt_ty'    = translateType alt_ty
+
+       scrt' <- translateTerm env scrt -- using original env
+       evald_scrt_bndr <- mkSysLocalOrCoVarM (fsLit "scrt") (translateType (idType scrt_bndr))
+       alts' <- translateAlts env' alts
+
+       return $
+         Let (NonRec scrt_bndr' (mkThunkVal scrt')) $
+           Eval [evald_scrt_bndr] (forceTerm (Var scrt_bndr')) $
+             Case (AVar evald_scrt_bndr) alt_ty' alts'
 
 translateTerm env (CoreSyn.Cast e co)
-  = Cast (translateTerm env e) co
+  = do e' <- translateTerm env e
+       return (Cast e' co)
 
 translateTerm _ CoreSyn.Tick{}
   = panic "translateTerm" (text "Tick is not supported")
       -- I don't want to think about this right now ...
 
 translateTerm _ (CoreSyn.Type ty)
-  = Type ty
+  = return (Type ty)
 
 translateTerm _ (CoreSyn.Coercion co)
-  = Coercion co
+  = return (Coercion co)
 
-translateBind :: SCVars -> CoreBind -> (SCVars, Bind)
+translateBind :: SCVars -> CoreBind -> UniqSM (SCVars, Bind)
 
 translateBind env (CoreSyn.NonRec b rhs)
-  = ( extendVarEnv env b b'
-    , NonRec b' (Lam (ValBndrs []) (translateTerm env rhs)) )
-  where
-    b' = translateBndr b
+  = do rhs' <- translateTerm env rhs
+       let b' = translateBndr b
+       return ( extendVarEnv env b b', NonRec b' (Lam (ValBndrs []) rhs') )
 
 translateBind env (CoreSyn.Rec bs)
-  = ( env', Rec bs'' )
-  where
-    bs'  = map (first translateBndr) bs
-    env' = extendVarEnvList env (zipWith (,) (map fst bs) (map fst bs'))
-    bs'' = map (second (Lam (ValBndrs []) . translateTerm env')) bs'
+  = do let
+         bs'  = map (first translateBndr) bs
+         env' = extendVarEnvList env (zipWith (,) (map fst bs) (map fst bs'))
 
-translateAlts :: SCVars -> [CoreSyn.CoreAlt] -> [Alt]
-translateAlts env alts = map (translateAlt env) alts
+         translateRhs (bndr, rhs) = (bndr,) . mkThunkVal <$> translateTerm env' rhs
 
-translateAlt :: SCVars -> CoreSyn.CoreAlt -> Alt
+       bs'' <- mapM translateRhs bs
+       return (env', Rec bs'')
+
+translateAlts :: SCVars -> [CoreSyn.CoreAlt] -> UniqSM [Alt]
+translateAlts env alts = mapM (translateAlt env) alts
+
+translateAlt :: SCVars -> CoreSyn.CoreAlt -> UniqSM Alt
 translateAlt env (lhs, bndrs, rhs)
-  = (lhs, bndrs', translateTerm env' rhs)
+  = (lhs, bndrs',) <$> translateTerm env' rhs
   where
     bndrs' = map translateBndr bndrs
     env'   = extendVarEnvList env (zip bndrs bndrs')
@@ -310,7 +322,11 @@ isThunkType = isJust . isThunkType_maybe
 -- | We need to explicitly build thunks in StrictCore. A thunk is just a nullary
 -- lambda.
 mkThunk :: Expr -> Expr
-mkThunk = Value . Lam (ValBndrs [])
+mkThunk (App e []) = e
+mkThunk e = Value (mkThunkVal e)
+
+mkThunkVal :: Expr -> Value
+mkThunkVal = Lam (ValBndrs [])
 
 -- | Multi-arity is just unboxed tuple in the original Core. Note that unboxed
 -- tuples are the only unlifted types we allow for now.
@@ -320,9 +336,8 @@ mkMultiArityType = mkTupleTy Unboxed
 -- | Generate term that forces a given thunk. Forcing means just applying the
 -- function. (remember that thunks are just nullary lambdas)
 forceTerm :: Expr -> Expr
-forceTerm e
-  = -- assert "forceTerm" (text "Term is not a thunk:" <+> ppr e) (isThunkType (exprType e)) $
-    App e []
+forceTerm (Value (Lam (ValBndrs []) e)) = e
+forceTerm e = App e []
 
 --------------------------------------------------------------------------------
 -- * Printing StrictCore

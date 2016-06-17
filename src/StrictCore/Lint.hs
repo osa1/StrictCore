@@ -112,8 +112,7 @@ lintExpr (Case scrt alt_ty alts)
 
 lintExpr (App fn args)
   = do fun_ty   <- lintExpr fn
-       args_tys <- mapM lintExpr args
-       lintApp fun_ty (zip args_tys args)
+       lintApp fun_ty args
 
 lintExpr (Type ty)
   = -- TODO: Not sure if this invariant still holds...
@@ -203,17 +202,19 @@ mkCaseAltMsg e ty1 ty2
 
 --------------------------------------------------------------------------------
 
-lintApp :: Type -> [(Type, Expr)] -> LintM Type
+lintApp :: Type -> [Expr] -> LintM Type
 
-lintApp fun_ty [(_, Type ty)]
+lintApp fun_ty [Type ty]
   = lintCoreArg fun_ty (CoreSyn.Type ty)
 
-lintApp fun_ty [(arg_ty, arg)]
-  = lintValApp arg fun_ty arg_ty
+lintApp fun_ty [arg]
+  = do arg_ty <- lintExpr arg
+       lintValApp arg fun_ty arg_ty
 
 lintApp fun_ty args
   = do -- TODO: Make sure `args` doesn't have Type
-       lintValApp args fun_ty (mkTupleTy Unboxed (map fst args))
+       arg_tys <- mapM lintExpr args
+       lintValApp args fun_ty (mkTupleTy Unboxed arg_tys)
 
 lintAtomApp :: Type -> [(Type, Atom)] -> LintM Type
 lintAtomApp fun_ty [(_, AType ty)]

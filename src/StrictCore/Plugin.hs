@@ -19,7 +19,8 @@ installPlugin _ todos
 
 pass :: ModGuts -> CoreM ModGuts
 pass guts@ModGuts{ mg_binds = binds }
-  = do let strictCoreBinds = map (snd . translateBind initSCVars) binds
+  = do us <- getUniqueSupplyM
+       let strictCoreBinds = initUs_ us (mapM (fmap snd . translateBind initSCVars) binds)
        pprTrace "StrictCore pass" (ppr strictCoreBinds) (return ())
        dflags <- getDynFlags
        let (warns, errs) = lintCoreProgram dflags [] strictCoreBinds

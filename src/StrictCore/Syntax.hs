@@ -138,8 +138,7 @@ type Alt = (AltCon, Bndrs, Expr)
 -- This just makes function arguments thunks.
 translateType :: Type -> Type
 
-translateType ty
-  | Just (arg_ty, ret_ty) <- splitFunTy_maybe ty
+translateType (FunTy arg_ty ret_ty)
   = mkFunTy (mkThunkType (translateType arg_ty)) (translateType ret_ty)
 
 -- rest is just traversal

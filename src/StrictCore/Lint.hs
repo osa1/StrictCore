@@ -59,7 +59,7 @@ lintValue (Lam as body)
   = addLoc (BodyOfLetRec (lamBndrBndrs as)) $ -- FIXME: LambdaBodyOf wants an Id so can't use it here
     lintBinders (lamBndrBndrs as) $ \as' -> do
       body_ty <- lintExpr body
-      return (mkPiTypes as' body_ty)
+      return (FunTy (mkMultiValTy (map idType as')) body_ty)
 
 lintValue (Con con as)
   = do con_ty  <- lintCon con

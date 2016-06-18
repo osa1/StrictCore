@@ -23,6 +23,8 @@ import TyCon
 import TyCoRep
 import Type
 import TysWiredIn (mkTupleTy)
+import Var
+import VarEnv
 
 import StrictCore.Syntax
 
@@ -117,7 +119,7 @@ lintExpr (Case scrt alt_ty alts)
        return alt_ty'
 
 lintExpr (App fn args)
-  = do fun_ty   <- lintExpr fn
+  = do fun_ty <- lintExpr fn
        lintApp fun_ty args
 
 lintExpr (Type ty)
@@ -158,28 +160,33 @@ mkEvalBndrsMsg bndrs_ty expr_ty bndrs expr
 lintAlt :: Type -> Type -> Alt -> LintM ()
 
 lintAlt _ alt_ty (CoreSyn.DEFAULT, args, rhs)
-  = do lintL (null args) (mkDefaultArgsMsg args)
-       lintAltRhs alt_ty rhs
+  = addLoc (RhsOf (head args)) $ do
+      lintL (null args) (mkDefaultArgsMsg args)
+      lintAltRhs alt_ty rhs
 
 lintAlt scrt_ty alt_ty (CoreSyn.LitAlt lit, args, rhs)
-  = do lintL (null args) (mkDefaultArgsMsg args)
-       let lit_ty = literalType lit
-       ensureEqTys lit_ty scrt_ty (mkBadPatMsg lit_ty scrt_ty)
-       lintAltRhs alt_ty rhs
+  = addLoc (BodyOfLetRec args) $ do
+      lintL (null args) (mkDefaultArgsMsg args)
+      let lit_ty = literalType lit
+      ensureEqTys lit_ty scrt_ty (mkBadPatMsg lit_ty scrt_ty)
+      lintAltRhs alt_ty rhs
 
 lintAlt scrt_ty alt_ty alt@(CoreSyn.DataAlt con, args, rhs)
   | isNewTyCon (dataConTyCon con)
   = addErrL (mkNewTyDataConAltMsg scrt_ty alt)
   | Just (tycon, tycon_arg_tys) <- splitTyConApp_maybe scrt_ty
-  = do -- First instantiate the universally quantified
-       -- type variables of the data constructor we've already check
-       lintL (tycon == dataConTyCon con) (mkBadConMsg tycon con)
-       let con_payload_ty = piResultTys (dataConRepType con) tycon_arg_tys
+  = addLoc (BodyOfLetRec args) $ do
+      -- First instantiate the universally quantified
+      -- type variables of the data constructor we've already check
+      lintL (tycon == dataConTyCon con) (mkBadConMsg tycon con)
+      let con_payload_ty = piResultTys (dataConRepType con) tycon_arg_tys
 
-       -- And now bring the new binders into scope
-       lintBinders args $ \ args' -> do
-         lintAltBinders scrt_ty con_payload_ty args'
-         lintAltRhs alt_ty rhs
+      -- And now bring the new binders into scope
+      lintBinders args $ \ args' -> do
+        -- FIXME: This line won't work, we need to translate DataCons to update
+        -- argument types.
+        -- lintAltBinders scrt_ty con_payload_ty args'
+        lintAltRhs alt_ty rhs
 
   | otherwise   -- Scrut-ty is wrong shape
   = addErrL (mkBadAltMsg scrt_ty alt)

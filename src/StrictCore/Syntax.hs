@@ -185,8 +185,9 @@ translateTerm env (CoreSyn.Var v)
   = return (forceTerm (Var v'))
 
   | isDataConWorkId v
-  = -- FIXME: We need to replace these with new functions... (section 4.3)
-    return (forceTerm (Var (translateBndr v)))
+    -- DataCons are not thunked
+  , let v' = v `setIdType` translateType (idType v)
+  = return (Var v')
 
   | otherwise
   = -- FIXME: For libraries...
@@ -230,7 +231,7 @@ translateTerm env (CoreSyn.Case scrt scrt_bndr alt_ty alts)
        let
          scrt_bndr' = translateBndr scrt_bndr
          env'       = extendVarEnv env scrt_bndr scrt_bndr'
-         alt_ty'    = mkThunkType (translateType alt_ty)
+         alt_ty'    = translateType alt_ty
 
        scrt' <- translateTerm env scrt -- using original env
        evald_scrt_bndr <- mkSysLocalOrCoVarM (fsLit "scrt") (translateType (idType scrt_bndr))
@@ -339,7 +340,9 @@ mkMultiArityType = mkTupleTy Unboxed
 -- | Generate term that forces a given thunk. Forcing means just applying the
 -- function. (remember that thunks are just nullary lambdas)
 forceTerm :: Expr -> Expr
-forceTerm (Value (Lam (ValBndrs []) e)) = e
+forceTerm e@(Var v)
+  | isThunkType (idType v) = App e []
+  | otherwise = pprPanic "forceTerm" (text "Id isn't a thunk:" <+> ppr v <+> ppr (idType v))
 forceTerm e = App e []
 
 --------------------------------------------------------------------------------

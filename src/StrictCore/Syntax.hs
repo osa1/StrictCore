@@ -270,7 +270,7 @@ translateBind env (CoreSyn.Rec bs)
 
          translateRhs (bndr, rhs) = (bndr,) . mkThunkVal <$> translateTerm env' rhs
 
-       bs'' <- mapM translateRhs bs
+       bs'' <- mapM translateRhs bs'
        return (env', Rec bs'')
 
 translateAlts :: SCVars -> [CoreSyn.CoreAlt] -> UniqSM [Alt]

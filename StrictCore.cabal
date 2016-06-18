@@ -16,6 +16,7 @@ library
   exposed-modules:
     StrictCore.Lint
     StrictCore.Plugin
+    StrictCore.Simplify
     StrictCore.Syntax
 
   -- other-modules:

@@ -38,7 +38,7 @@ data Expr
 
   | Value Value
 
-  | Var Id
+  | Var Id -- TODO: Why not make this a Value?
 
   | Eval Bndrs Expr Expr
       -- ^ Evaluation.
@@ -344,6 +344,10 @@ forceTerm e@(Var v)
   | isThunkType (idType v) = App e []
   | otherwise = pprPanic "forceTerm" (text "Id isn't a thunk:" <+> ppr v <+> ppr (idType v))
 forceTerm e = App e []
+
+isValueExpr :: Expr -> Bool
+isValueExpr (Value _) = True
+isValueExpr _         = False
 
 --------------------------------------------------------------------------------
 -- * Printing StrictCore

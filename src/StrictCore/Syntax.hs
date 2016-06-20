@@ -41,7 +41,7 @@ data Expr
   | Var Id -- TODO: Why not make this a Value?
 
   | Eval Bndrs Expr Expr
-      -- ^ Evaluation.
+      -- ^ Evaluation.  ToDo: comements!
 
   | Let Bind Expr
       -- ^ Allocation.
@@ -72,7 +72,8 @@ bindersOfBinds :: [Bind] -> [CoreBndr]
 bindersOfBinds = concatMap bindersOf
 
 -- | It's always work-safe to duplicate a value; you might duplicate code but
--- never work.
+-- never work.  Moreover a Value is always a head-normal form; seq'ig it
+-- is a no-op.
 data Value
   = Lam LamBndr Expr
       -- ^ Lambda takes multiple arguments now.
@@ -92,7 +93,7 @@ data Atom
   = AVar Id
   | ALit Literal
 
-  | AApp Atom Type
+  | AApp Atom [Type]
       -- ^ This appears in e.g. f (g @ Int)
       --                          ^^^^^^^^^
 

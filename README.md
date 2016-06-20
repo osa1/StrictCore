@@ -248,7 +248,7 @@ now values, for this definition of "value":
 `f3` in section 3.1:
 
 ```
-f3 :: <a:*, _:Int, _:a> -> <a, Int>
+f3 :: <a::*, _::Int, _::a> -> <a, Int>
 ```
 
 Actually, currently we can't type check this as Core's type system is not
@@ -265,3 +265,54 @@ Simon thinks it may be possible to add one more `Type` constructor to GHC's
 This leads to questions like, should we remove `FunTy` ? Would `FunTy ty1 ty2`
 be equal (as in `eqType`) to `MultiFun [ty1] [ty2]`? In the places where we
 pattern match on `Type` we'd have to consider both cases as equal...
+
+
+
+Here's another idea that doesn't require any changes in GHC.
+
+When translating from Core to StrictCore, we never have types like these because
+Core's unboxed tuples can't have type binders in them. So when when translating
+to StrictCore we're never going to have such types.
+
+When generating StrictCore terms, we do this transformation:
+
+- Types:
+
+  ```
+  <_ :: Int, a :: *, x :: a>
+  ```
+
+  becomes
+
+  ```
+  a :: * -> <_ :: Int, x :: a>
+  ```
+
+- Terms. We need to consider lambdas and multi-values.
+
+  Lambdas:
+
+  ```
+  (\<i x a> -> ...) :: <_ :: Int, a :: *, x :: a>
+  ```
+
+  becomes
+
+  ```
+  (\x . \<i a> -> ...) :: (a :: *) -> <_ :: Int, x :: a>
+  ```
+
+  Multi-values: This is a bit tricky.
+
+  ```
+  <1 :: Int, Int :: *, 2 :: Int>
+  ```
+
+  In an application position we know that the lambda expects two arguments, so
+  we apply two terms: `@Int` and `<1 :: Int, 2 :: Int>`.
+
+  But in a return position things get tricky. Hmm... So maybe this arity
+  changing transformation is not going to work either. This is annoying.
+
+  I think CoreLint just rejects when Types appear in non-argument position. So
+  maybe we should do the same thing here.

@@ -72,8 +72,8 @@ bindersOfBinds :: [Bind] -> [CoreBndr]
 bindersOfBinds = concatMap bindersOf
 
 -- | It's always work-safe to duplicate a value; you might duplicate code but
--- never work.  Moreover a Value is always a head-normal form; seq'ig it
--- is a no-op.
+-- never work.  Moreover a Value is always a head-normal form; seq'ing it is a
+-- no-op.
 data Value
   = Lam LamBndr Expr
       -- ^ Lambda takes multiple arguments now.

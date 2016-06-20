@@ -178,3 +178,90 @@ $ ghc Test.hs -fplugin=StrictCore.Plugin
 ```
 
 It should work like stock GHC, except it should also print StrictCore program.
+
+## Logs
+
+20/6/2016: Value syntax needs to change. Here's the current `Value` syntax:
+
+```haskell
+-- | It's always work-safe to duplicate a value; you might duplicate code but
+-- never work.  Moreover a Value is always a head-normal form; seq'ing it is a
+-- no-op.
+data Value
+  = Lam LamBndr Expr
+      -- ^ Lambda takes multiple arguments now.
+  | Con DataCon [Atom]
+      -- ^ _Saturated_ constructor application.
+  | Lit Literal
+
+data LamBndr
+  = TyBndr CoreBndr
+  | ValBndrs [CoreBndr]
+```
+
+Suppose we have:
+
+```
+Λa . reverse ([] @ a)
+```
+
+Is this a value or not? It certainly isn't a value, but in our syntax it's
+considered a value even though our invariants about values don't hold for this
+term (it's not work-safe to duplicate this value, it's not in HNF).
+
+Alternatives we considered so far:
+
+(1): Make Λ not erased, instead pass a state token -- a zero-width argument (like RealWorld).
+
+Problem: We lose sharing in some cases. E.g.
+
+```
+let f = Λa . reverse ([] @ a) in (f @ Int) ++ (f @ Int)
+```
+
+(suppose CSE can't happen) we lose sharing because `f @ Int` becomes a real
+function application now.
+
+(2): Add a new invariant: A value `Lam` with only type binders has a value inside.
+
+This makes our example above not a value. So we'd have to thunk it explicitly.
+This preserves the sharing.
+
+Problem: What if we had
+
+```
+let f = λx . Λa . reverse ([] @ a)
+```
+
+The type lambda is not a value anymore as our invariant doesn't hold.
+
+(3): Collapse `Expr` and `Value`, have an invariant that RHS of let bindings are
+now values, for this definition of "value":
+
+- A term lambda is a value.
+- A type lambda is a value is its body is a value.
+- DataCon applications are values. (remember that DataCon applications are
+  always saturated)
+- Literals are values.
+
+20/6/2016: `LamBndr` type is not going to work. There's no way to express
+`f3` in section 3.1:
+
+```
+f3 :: <a:*, _:Int, _:a> -> <a, Int>
+```
+
+Actually, currently we can't type check this as Core's type system is not
+expressive enough for this type. Currently we translate this to an unboxed tuple
+which is obviously not going to work as it'd have binders in it.
+
+Simon thinks it may be possible to add one more `Type` constructor to GHC's
+`Type`:
+
+```
+  | MultiFun [TyBinder] [Type]
+```
+
+This leads to questions like, should we remove `FunTy` ? Would `FunTy ty1 ty2`
+be equal (as in `eqType`) to `MultiFun [ty1] [ty2]`? In the places where we
+pattern match on `Type` we'd have to consider both cases as equal...

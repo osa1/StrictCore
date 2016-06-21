@@ -41,8 +41,9 @@ initSimplEnv
 --------------------------------------------------------------------------------
 
 simplifyPgm :: SimplEnv -> [Bind] -> [Bind]
-simplifyPgm env0 bind0 = map simplifyBind bind0
+simplifyPgm env0 bind0 = bind0 -- map simplifyBind bind0
 
+{-
 simplifyBind :: Bind -> Bind
 simplifyBind (NonRec bndr val)
   = NonRec bndr (simplifyVal val)
@@ -135,3 +136,4 @@ mkNonRecLets = undefined
 
 substVals :: [(Bndr, Value)] -> Expr -> Expr
 substVals = undefined
+-}

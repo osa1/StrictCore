@@ -23,8 +23,6 @@ import TyCon
 import TyCoRep
 import Type
 import TysWiredIn (mkTupleTy)
-import Var
-import VarEnv
 
 import StrictCore.Syntax
 
@@ -46,51 +44,35 @@ lintBind :: Bind -> LintM ()
 lintBind (NonRec bndr rhs) = lintSingleBind bndr rhs
 lintBind (Rec bs)          = mapM_ (uncurry lintSingleBind) bs
 
-lintSingleBind :: Bndr -> Value -> LintM ()
-lintSingleBind bndr rhs
-  = addLoc (RhsOf bndr) $ do
-    rhs_ty <- lintValue rhs
-    binder_ty <- applySubstTy (idType bndr)
-    ensureEqTys binder_ty rhs_ty (mkRhsMsg bndr (text "RHS") rhs_ty)
-
 --------------------------------------------------------------------------------
 
-lintValue :: Value -> LintM Type
+lintExpr :: Expr -> LintM Type
 
-lintValue (Lam (TyBndr ty_var) body)
-  = addLoc (LambdaBodyOf ty_var) $
-    lintBinder ty_var $ \ty_var' -> do
-      body_ty <- lintExpr body
-      return (mkLamType ty_var' body_ty)
+lintExpr (Var var)
+  = do var' <- lookupIdInScope var
+       return (idType var')
 
-lintValue (Lam (ValBndrs as) body)
+lintExpr (Lit lit)
+  = return (literalType lit)
+
+lintExpr (MultiVal es)
+  = mkTupleTy Unboxed <$> mapM lintExpr es
+
+lintExpr (Lam (ValBndrs as) body)
   = addLoc (BodyOfLetRec as) $ -- FIXME: LambdaBodyOf wants an Id so can't use it here
     lintBinders as $ \as' -> do
       body_ty <- lintExpr body
       return (FunTy (mkMultiValTy (map idType as')) body_ty)
 
-lintValue (Con con as)
-  = do con_ty  <- lintCon con
-       arg_tys <- mapM lintAtom as
-       -- TODO: Make sure application is saturated
-       lintAtomApp con_ty (zip arg_tys as)
+lintExpr (Lam (TyBndr ty_var) body)
+  = addLoc (LambdaBodyOf ty_var) $
+    lintBinder ty_var $ \ty_var' -> do
+      body_ty <- lintExpr body
+      return (mkLamType ty_var' body_ty)
 
-lintValue (Lit lit)
-  = return (literalType lit)
-
---------------------------------------------------------------------------------
-
-lintExpr :: Expr -> LintM Type
-
-lintExpr (MultiVal es)
-  = mkTupleTy Unboxed <$> mapM lintExpr es
-
-lintExpr (Value val)
-  = lintValue val
-
-lintExpr (Var var)
-  = do var' <- lookupIdInScope var
-       return (idType var')
+lintExpr (App fn args)
+  = do fun_ty <- lintExpr fn
+       lintApp fun_ty args
 
 lintExpr (Eval bndrs rhs body)
   = do rhs_ty <- lintExpr rhs
@@ -100,12 +82,12 @@ lintExpr (Eval bndrs rhs body)
          lintExpr body
 
 lintExpr (Let (NonRec bndr rhs) body)
-  = do lintSingleBinding bndr rhs
+  = do lintSingleBind bndr rhs
        lintAndScopeId bndr $ \_ -> lintExpr body
 
 lintExpr (Let (Rec binds) body)
   = lintAndScopeIds (map fst binds) $ \_ -> do
-      mapM_ (uncurry lintSingleBinding) binds
+      mapM_ (uncurry lintSingleBind) binds
       lintExpr body
 
 lintExpr (Case scrt alt_ty alts)
@@ -117,10 +99,6 @@ lintExpr (Case scrt alt_ty alts)
        -- Check the alternatives
        mapM_ (lintAlt scrt_ty alt_ty') alts
        return alt_ty'
-
-lintExpr (App fn args)
-  = do fun_ty <- lintExpr fn
-       lintApp fun_ty args
 
 lintExpr (Type ty)
   = -- TODO: Not sure if this invariant still holds...
@@ -140,12 +118,15 @@ lintExpr (Cast expr co)
 lintExpr (Coercion co)
   = lintCoreExpr (CoreSyn.Coercion co)
 
-lintSingleBinding :: Id -> Value -> LintM ()
-lintSingleBinding bndr val
+lintSingleBind :: Id -> Expr -> LintM ()
+lintSingleBind bndr val
   = do ty <- lintValue val
        lintIdBndr bndr (\_ -> return ()) -- Check match to RHS type
        binder_ty <- applySubstTy (idType bndr)
        ensureEqTys binder_ty ty (mkRhsMsg bndr (text "RHS") ty)
+
+lintValue :: Expr -> LintM Type
+lintValue = lintExpr -- TODO: check if expr is really a value
 
 mkEvalBndrsMsg :: Type -> Type -> [Id] -> Expr -> MsgDoc
 mkEvalBndrsMsg bndrs_ty expr_ty bndrs expr
@@ -231,17 +212,6 @@ lintApp fun_ty args
        arg_tys <- mapM lintExpr args
        lintValApp args fun_ty (mkTupleTy Unboxed arg_tys)
 
-lintAtomApp :: Type -> [(Type, Atom)] -> LintM Type
-lintAtomApp fun_ty [(_, AType ty)]
-  = lintCoreArg fun_ty (CoreSyn.Type ty)
-
-lintAtomApp fun_ty [(arg_ty, arg)]
-  = lintValApp arg fun_ty arg_ty
-
-lintAtomApp fun_ty args
-  = do -- TODO: Make sure `args` doesn't have Type
-       lintValApp args fun_ty (mkTupleTy Unboxed (map fst args))
-
 --------------------------------------------------------------------------------
 
 lintAtom :: Atom -> LintM Type
@@ -272,12 +242,6 @@ lintAtom (AType ty)
   = lintCoreExpr (CoreSyn.Type ty)
 
 --------------------------------------------------------------------------------
-
-lintCon :: DataCon -> LintM Type
-lintCon =
-  -- TODO: This is probably wrong... Don't we at least need to instantiate TyCon
-  -- ty args?
-  return . idType . dataConWorkId
 
 mkMultiValTy :: [Type] -> Type
 mkMultiValTy [ty] = ty

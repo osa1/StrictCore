@@ -181,7 +181,7 @@ It should work like stock GHC, except it should also print StrictCore program.
 
 ## Logs
 
-20/6/2016: Value syntax needs to change. Here's the current `Value` syntax:
+**20/6/2016:** Value syntax needs to change. Here's the current `Value` syntax:
 
 ```haskell
 -- | It's always work-safe to duplicate a value; you might duplicate code but
@@ -316,3 +316,48 @@ When generating StrictCore terms, we do this transformation:
 
   I think CoreLint just rejects when Types appear in non-argument position. So
   maybe we should do the same thing here.
+
+**21/6/2016:** Indeed, we don't expect to see types in multi-value expressions
+so we'll go with that solution. Also, I'm merging values and expressions. I'll
+implement a lint check that makes sure let only binds to values.
+
+Post-meeting questions:
+
+- Do we need a DataCon application syntax? I think we don't, as at this level
+  there's really no difference between a function application and DataCon
+  application. In STG it's different because DataCon applications need to be
+  saturated, but here we just use multi-arity functions as DataCon workers, and
+  wrap them with lambdas in for currying.
+
+- Is there a difference between
+
+  ```
+  <Int> -> Int
+  ```
+
+  and
+
+  ```
+  Int -> Int
+  ```
+
+  Similarly in terms:
+
+  ```
+  \<x> -> x
+  ```
+
+  and
+
+  ```
+  \x -> x
+  ```
+
+  Operationally there's no difference, and I don't see why would there be any
+  difference in the syntax. So I think it makes sense to consider them the same.
+
+  However, it'd be convenient to have a canonical representation. So I'm
+  assuming we'll never generate and see a singleton multi-value.
+
+  Remember that nullary multi-values are special -- they're used for forcing
+  (when applied) and thunking (when using as argument binder).

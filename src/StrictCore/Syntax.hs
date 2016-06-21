@@ -33,15 +33,24 @@ import Prelude hiding (id)
 
 -- | Non-ANF terms.
 data Expr
-  = MultiVal [Expr]
-      -- ^ Return multiple values. (singleton list is OK)
+  = Var Id
 
-  | Value Value
+  | Lit Literal
 
-  | Var Id -- TODO: Why not make this a Value?
+  | MultiVal [Expr]
+      -- ^ Return multiple values. INVARIANT: Not a singleton list.
+      -- Empty list is OK: Forces a thunk.
+
+  | Lam LamBndr Expr
+      -- ^ There's no difference between curried and uncurried type arguments,
+      -- so we have a special type `LamBndr` that forces us to uncurry type
+      -- arguments.
+
+  | App Expr [Expr]
+      -- ^ Application.
 
   | Eval Bndrs Expr Expr
-      -- ^ Evaluation.  ToDo: comements!
+      -- ^ Evaluation.  ToDo: comments!
 
   | Let Bind Expr
       -- ^ Allocation.
@@ -50,9 +59,6 @@ data Expr
       -- ^ Case doesn't do evaluation anymore, so we have `Atom` as scrutinee.
       -- TODO: Do we need a binder here to bind the scrutinee?
 
-  | App Expr [Expr]
-      -- ^ Application.
-
   | Type Type
 
   | Cast Expr Coercion
@@ -60,9 +66,10 @@ data Expr
   | Coercion Coercion
       -- TODO: Is this needed?
 
+-- | INVARIANT: RHSs are all values. See `isValue`.
 data Bind
-  = NonRec CoreBndr Value
-  | Rec [(CoreBndr, Value)]
+  = NonRec CoreBndr Expr
+  | Rec [(CoreBndr, Expr)]
 
 bindersOf :: Bind -> [CoreBndr]
 bindersOf (NonRec b _) = [b]
@@ -71,19 +78,31 @@ bindersOf (Rec bs)     = map fst bs
 bindersOfBinds :: [Bind] -> [CoreBndr]
 bindersOfBinds = concatMap bindersOf
 
--- | It's always work-safe to duplicate a value; you might duplicate code but
--- never work.  Moreover a Value is always a head-normal form; seq'ing it is a
--- no-op.
-data Value
-  = Lam LamBndr Expr
-      -- ^ Lambda takes multiple arguments now.
-  | Con DataCon [Atom]
-      -- ^ _Saturated_ constructor application.
-  | Lit Literal
+--------------------------------------------------------------------------------
 
--- FIXME: I'm not sure about this ... I think It doesn't make sense to have
--- curried vs. non-curried distinction in type arguments, so we have these two
--- types of argument binders here.
+-- | It's always work-safe to duplicate a value; you might duplicate code but
+-- never work. Moreover a value is always a head-normal form; seq'ing it is a
+-- no-op. Let expressions bind things to values.
+--
+-- Very conservative, syntactic check.
+isValue :: Expr -> Bool
+isValue (Lit _) = True
+
+isValue (Lam (TyBndr _) e)   = isValue e
+isValue (Lam (ValBndrs _) _) = True
+
+-- saturated constructor applications are values when arguments are values
+isValue (App (Var id) args)
+  | Just dc <- isDataConWorkId_maybe id
+  , all isValue args
+  , dataConRepArity dc == length args
+  = True
+
+isValue _ = False
+
+--------------------------------------------------------------------------------
+
+-- | Lambda binders. Type binders need to be curried.
 data LamBndr
   = TyBndr CoreBndr
   | ValBndrs [CoreBndr]
@@ -91,9 +110,10 @@ data LamBndr
 -- | Atoms are not allocated, and also work-safe.
 data Atom
   = AVar Id
+
   | ALit Literal
 
-  | AApp Atom [Type]
+  | AApp Atom Type
       -- ^ This appears in e.g. f (g @ Int)
       --                          ^^^^^^^^^
 
@@ -195,7 +215,7 @@ translateTerm env (CoreSyn.Var v)
     return (forceTerm (Var (translateBndr v)))
 
 translateTerm _ (CoreSyn.Lit l)
-  = return (Value (Lit l))
+  = return (Lit l)
 
 translateTerm env (CoreSyn.App e1 e2)
   | CoreSyn.isTypeArg e2
@@ -211,15 +231,13 @@ translateTerm env (CoreSyn.App e1 e2)
 translateTerm env (CoreSyn.Lam arg body)
   | isTyVar arg
   = do body' <- translateTerm env body
-       return (Value (Lam (TyBndr arg) body'))
+       return (Lam (TyBndr arg) body')
 
   | otherwise
   = do let arg' = translateBndr arg
            env' = extendVarEnv env arg arg'
        body' <- translateTerm env' body
-       return (Value (Lam (ValBndrs [ arg' ]) body'))
-
--- TODO: Subsitute when Type is bound in a Let
+       return (Lam (ValBndrs [ arg' ]) body')
 
 translateTerm env (CoreSyn.Let bind e)
   = do (env', bind') <- translateBind env bind
@@ -239,7 +257,7 @@ translateTerm env (CoreSyn.Case scrt scrt_bndr alt_ty alts)
        alts' <- translateAlts env' alts
 
        return $
-         Let (NonRec scrt_bndr' (mkThunkVal scrt')) $
+         Let (NonRec scrt_bndr' (mkThunk scrt')) $
            Eval [evald_scrt_bndr] (forceTerm (Var scrt_bndr')) $
              Case (AVar evald_scrt_bndr) alt_ty' alts'
 
@@ -269,7 +287,7 @@ translateBind env (CoreSyn.Rec bs)
          bs'  = map (first translateBndr) bs
          env' = extendVarEnvList env (zipWith (,) (map fst bs) (map fst bs'))
 
-         translateRhs (bndr, rhs) = (bndr,) . mkThunkVal <$> translateTerm env' rhs
+         translateRhs (bndr, rhs) = (bndr,) . mkThunk <$> translateTerm env' rhs
 
        bs'' <- mapM translateRhs bs'
        return (env', Rec bs'')
@@ -328,10 +346,7 @@ isThunkType = isJust . isThunkType_maybe
 -- lambda.
 mkThunk :: Expr -> Expr
 mkThunk (App e []) = e
-mkThunk e = Value (mkThunkVal e)
-
-mkThunkVal :: Expr -> Value
-mkThunkVal = Lam (ValBndrs [])
+mkThunk e = Lam (ValBndrs []) e
 
 -- | Multi-arity is just unboxed tuple in the original Core. Note that unboxed
 -- tuples are the only unlifted types we allow for now.
@@ -345,10 +360,6 @@ forceTerm e@(Var v)
   | isThunkType (idType v) = App e []
   | otherwise = pprPanic "forceTerm" (text "Id isn't a thunk:" <+> ppr v <+> ppr (idType v))
 forceTerm e = App e []
-
-isValueExpr :: Expr -> Bool
-isValueExpr (Value _) = True
-isValueExpr _         = False
 
 --------------------------------------------------------------------------------
 -- * Printing StrictCore
@@ -370,14 +381,29 @@ noParens d = d
 
 pprExpr :: (SDoc -> SDoc) -> Expr -> SDoc
 
+pprExpr _ (Var v)
+  = ppr v
+
+pprExpr add_par (Lit lit)
+  = pprLiteral add_par lit
+
 pprExpr _ (MultiVal es)
   = angleBrackets (sep (map (pprExpr parens) es))
 
-pprExpr add_par (Value val)
-  = pprVal add_par val
+pprExpr _ (Lam (ValBndrs []) e) -- thunk
+  = braces (pprExpr noParens e)
 
-pprExpr _ (Var v)
-  = ppr v
+pprExpr add_par (Lam as e)
+  = add_par $
+    hang (text "\\" <+> ppr as <+> arrow) 2 (pprExpr noParens e)
+
+pprExpr _ (App e []) -- thunk evaluation
+  = char '~' <> pprExpr parens e
+      -- there isn't any syntactic sugar for this in the paper,
+      -- so making up one.
+
+pprExpr add_par (App f as)
+  = add_par $ hang (pprExpr parens f) 2 (sep (map pprArg as))
 
 pprExpr add_par (Eval bndrs rhs e)
   = add_par $
@@ -393,14 +419,6 @@ pprExpr add_par (Let bind body)
     kw = case bind of
            NonRec _ _ -> text "let {"
            Rec _      -> text "letrec {"
-
-pprExpr _ (App e []) -- thunk evaluation
-  = char '~' <> pprExpr parens e
-      -- there isn't any syntactic sugar for this in the paper,
-      -- so making up one.
-
-pprExpr add_par (App f as)
-  = add_par $ hang (pprExpr parens f) 2 (sep (map pprArg as))
 
 pprExpr add_par (Case scrt _ alts)
   = add_par $
@@ -419,22 +437,6 @@ pprExpr add_par (Coercion co)
 
 pprExpr add_par (Cast e co)
   = add_par (sep [pprExpr parens e, text "`cast`" <+> pprCo co])
-
-pprVal :: (SDoc -> SDoc) -> Value -> SDoc
-
-pprVal _ (Lam (ValBndrs []) e) -- thunk
-  = braces (pprExpr noParens e)
-
-pprVal add_par (Lam as e)
-  = add_par $
-    hang (text "\\" <+> ppr as <+> arrow) 2 (pprExpr noParens e)
-
-pprVal add_par (Con con as)
-  = add_par $
-    sep (ppr con : map (pprAtomArg parens) as)
-
-pprVal add_par (Lit lit)
-  = pprLiteral add_par lit
 
 pprAtom :: (SDoc -> SDoc) -> Atom -> SDoc
 
@@ -473,9 +475,9 @@ pprBind (NonRec bndr val)
 pprBind (Rec bs)
   = vcat (map (\(bndr, val) -> pprBinding bndr val <> semi) bs)
 
-pprBinding :: Bndr -> Value -> SDoc
+pprBinding :: Bndr -> Expr -> SDoc
 pprBinding bndr val
-  = pprBndr LetBind bndr $$ hang (ppr bndr <+> equals) 2 (pprVal noParens val)
+  = pprBndr LetBind bndr $$ hang (ppr bndr <+> equals) 2 (pprExpr noParens val)
 
 pprAlt :: Alt -> SDoc
 pprAlt (con, args, rhs)

@@ -1,5 +1,8 @@
 # StrictCore
 
+(This work is inspired by the paper ["Types are calling
+conventions"](tacc-hs09.pdf))
+
 StrictCore aims to improve GHC's Core language by having:
 
 1. Thunk vs. value distinction at the type level.
